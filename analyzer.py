@@ -11,9 +11,26 @@ from collections import Counter
 # CONFIGURATION
 # =========================================================
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+# Tesseract :
+# - sur Windows local, on utilise l'installation habituelle ;
+# - sur Railway/Linux, shutil.which("tesseract") trouve le binaire
+#   installé par le Dockerfile.
+import os
+import shutil
+
+_tesseract_env = os.getenv("TESSERACT_CMD")
+
+if _tesseract_env:
+    pytesseract.pytesseract.tesseract_cmd = _tesseract_env
+else:
+    _tesseract_linux = shutil.which("tesseract")
+
+    if _tesseract_linux:
+        pytesseract.pytesseract.tesseract_cmd = _tesseract_linux
+    else:
+        pytesseract.pytesseract.tesseract_cmd = (
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        )
 
 
 # =========================================================
