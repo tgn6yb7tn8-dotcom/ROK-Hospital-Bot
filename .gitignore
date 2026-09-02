@@ -1,0 +1,22 @@
+# Secrets
+google_credentials.json
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Local test files
+test_hopital*.png
+
+# OS / IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
