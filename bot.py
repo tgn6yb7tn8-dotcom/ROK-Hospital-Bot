@@ -90,11 +90,14 @@ def obtenir_feuille_google():
     )
 
     if google_credentials_json:
+
         try:
             credentials_info = json.loads(
                 google_credentials_json
             )
+
         except json.JSONDecodeError as e:
+
             raise ValueError(
                 "GOOGLE_CREDENTIALS_JSON n'est pas un JSON valide."
             ) from e
@@ -105,6 +108,7 @@ def obtenir_feuille_google():
         )
 
     else:
+
         credentials = Credentials.from_service_account_file(
             GOOGLE_CREDENTIALS_FILE,
             scopes=scopes,
@@ -272,8 +276,8 @@ def supprimer_player_id_google(
     """
     Supprime la ligne correspondant au Player ID.
 
-    Comme les doublons sont désormais bloqués, un Player ID
-    valide ne doit avoir qu'une seule ligne dans "hopital".
+    Les doublons étant bloqués, un Player ID ne doit normalement
+    avoir qu'une seule ligne dans "hopital".
     """
 
     worksheet = obtenir_feuille_google()
@@ -286,8 +290,6 @@ def supprimer_player_id_google(
     if not lignes:
         return False
 
-    # Normalement il n'y a qu'une seule ligne puisque les doublons
-    # sont bloqués. Par sécurité, on supprime la première correspondance.
     row_number = lignes[0]
 
     worksheet.delete_rows(
@@ -597,6 +599,55 @@ def admin_ou_role_autorise():
     return commands.check(
         predicate
     )
+
+
+# =========================================================
+# SUPPRESSION DU MESSAGE SOURCE
+# =========================================================
+
+async def supprimer_message_source(
+    message,
+):
+    """
+    Supprime le message original du salon de vérification.
+
+    Cette fonction est utilisée aussi bien après une réussite
+    qu'après une erreur, afin que les captures ne restent jamais
+    dans le salon de vérification.
+    """
+
+    try:
+
+        await message.delete()
+
+        print(
+            "✅ Message source supprimé."
+        )
+
+        return True
+
+    except discord.NotFound:
+
+        # Le message a déjà été supprimé.
+        return True
+
+    except discord.Forbidden:
+
+        print(
+            "⚠️ Impossible de supprimer le message source : "
+            "permission Manage Messages absente."
+        )
+
+        return False
+
+    except discord.HTTPException as e:
+
+        print(
+            "⚠️ Erreur Discord lors de la suppression "
+            f"du message source : {e}"
+        )
+
+        return False
 
 
 # =========================================================
@@ -1118,7 +1169,8 @@ async def rokhelp_command(
         f"modifier la dernière ligne "
         f"(rôle **{ADMIN_ROLE_NAME}** requis)\n"
         "`!delete <Player ID>` → supprimer la vérification "
-        f"du joueur (rôle **{ADMIN_ROLE_NAME}** requis)\n\n"
+        "du joueur "
+        f"(rôle **{ADMIN_ROLE_NAME}** requis)\n\n"
         "**Stats disponibles pour !update :**\n"
         "`t4`, `t5`, `total`, `food`, `wood`, `stone`, `gold`\n\n"
         "**Exemple :**\n"
@@ -1249,6 +1301,10 @@ async def on_message(
                 "❌ Salon de résultats introuvable."
             )
 
+            await supprimer_message_source(
+                message
+            )
+
             return
 
         # -------------------------------------------------
@@ -1288,6 +1344,10 @@ async def on_message(
                 ),
             )
 
+            await supprimer_message_source(
+                message
+            )
+
             return
 
         if len(attachments_images) > MAX_IMAGES:
@@ -1307,6 +1367,10 @@ async def on_message(
                     f"You sent too many screenshots. "
                     f"Only {MAX_IMAGES} screenshots are allowed."
                 ),
+            )
+
+            await supprimer_message_source(
+                message
             )
 
             return
@@ -1334,6 +1398,10 @@ async def on_message(
                     "The Player ID is invalid. "
                     "Please send the numeric Player ID only."
                 ),
+            )
+
+            await supprimer_message_source(
+                message
             )
 
             return
@@ -1390,6 +1458,10 @@ async def on_message(
                     ),
                 )
 
+                await supprimer_message_source(
+                    message
+                )
+
                 return
 
             if deja_present:
@@ -1414,28 +1486,9 @@ async def on_message(
                     ),
                 )
 
-                try:
-
-                    await message.delete()
-
-                    print(
-                        "🗑️ Message doublon supprimé."
-                    )
-
-                except discord.Forbidden:
-
-                    print(
-                        "⚠️ Impossible de supprimer "
-                        "le message doublon : "
-                        "permission Manage Messages absente."
-                    )
-
-                except discord.HTTPException as e:
-
-                    print(
-                        "⚠️ Erreur Discord lors de la "
-                        f"suppression du doublon : {e}"
-                    )
+                await supprimer_message_source(
+                    message
+                )
 
                 return
 
@@ -1577,9 +1630,13 @@ async def on_message(
                         ),
                     )
 
+                    await supprimer_message_source(
+                        message
+                    )
+
                     print(
                         "❌ Analyse invalide : "
-                        "message source conservé."
+                        "message source supprimé."
                     )
 
                     return
@@ -1640,6 +1697,10 @@ async def on_message(
                             "saved to Google Sheets. Please try again "
                             "later."
                         ),
+                    )
+
+                    await supprimer_message_source(
+                        message
                     )
 
                     return
@@ -1713,28 +1774,9 @@ async def on_message(
                 # SUPPRESSION DU MESSAGE SOURCE
                 # -------------------------------------------------
 
-                try:
-
-                    await message.delete()
-
-                    print(
-                        "✅ Message source supprimé."
-                    )
-
-                except discord.Forbidden:
-
-                    print(
-                        "⚠️ Impossible de supprimer "
-                        "le message : permission "
-                        "Manage Messages absente."
-                    )
-
-                except discord.HTTPException as e:
-
-                    print(
-                        "⚠️ Erreur Discord lors "
-                        f"de la suppression : {e}"
-                    )
+                await supprimer_message_source(
+                    message
+                )
 
             except Exception as e:
 
@@ -1775,6 +1817,10 @@ async def on_message(
                             "analyzing your hospital screenshots. "
                             "Please try sending them again."
                         ),
+                    )
+
+                    await supprimer_message_source(
+                        message
                     )
 
                 except Exception as send_error:
@@ -1831,9 +1877,11 @@ if __name__ == "__main__":
         )
 
     if not os.getenv("GOOGLE_CREDENTIALS_JSON"):
+
         if not os.path.exists(
             GOOGLE_CREDENTIALS_FILE
         ):
+
             raise FileNotFoundError(
                 f"Fichier introuvable : "
                 f"{GOOGLE_CREDENTIALS_FILE}\n"
