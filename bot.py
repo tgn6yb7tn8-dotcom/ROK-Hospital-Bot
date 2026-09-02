@@ -1161,6 +1161,7 @@ async def rokhelp_command(
         "🤖 **ROK Hospital Checker — Commands**\n\n"
         "`!latest <Player ID>` → dernière vérification\n"
         "`!history <Player ID>` → historique (10 dernières)\n\n"
+        "🔢 A Player ID must contain exactly 9 digits.\n"
         "🔒 Un Player ID déjà présent dans `hopital` "
         "ne peut pas être soumis une deuxième fois. "
         "Il redevient disponible après suppression de toutes "
@@ -1387,16 +1388,43 @@ async def on_message(
                 "❌ **Verification failed**\n"
                 f"👤 **Player ID:** "
                 f"`{player_id or 'Unknown'}`\n"
-                "The message must contain a numeric "
+                "The message must contain the numeric "
                 "Player ID only."
             )
 
             await envoyer_dm_erreur(
                 message.author,
-                "Verification error",
+                "Invalid Player ID",
                 (
-                    "The Player ID is invalid. "
-                    "Please send the numeric Player ID only."
+                    "The Player ID must contain numbers only. "
+                    "Please check that you entered it correctly."
+                ),
+            )
+
+            await supprimer_message_source(
+                message
+            )
+
+            return
+
+        if len(player_id) != 9:
+
+            await result_channel.send(
+                "❌ **Verification failed**\n"
+                f"👤 **Player ID:** "
+                f"`{player_id}`\n"
+                "A valid Player ID must contain exactly "
+                "**9 digits**."
+            )
+
+            await envoyer_dm_erreur(
+                message.author,
+                "Invalid Player ID",
+                (
+                    f"Your Player ID has **{len(player_id)} digits**, "
+                    "but a valid Player ID must contain exactly "
+                    "**9 digits**. Please check for a missing "
+                    "or extra digit and send it again."
                 ),
             )
 
