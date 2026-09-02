@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import shutil
 import tempfile
@@ -16,7 +17,7 @@ from analyzer import analyser_plusieurs_images
 # CONFIGURATION
 # =========================================================
 
-TOKEN = "MTU0NDY1NTc5MDI2NTA3Nzg4MA.GG0G32.Ae7bQknWa4u6Cb8ACVyXT35WnhLAmbmi5Vi_8s"
+TOKEN = os.getenv("DISCORD_TOKEN", "TON_TOKEN_ICI")
 
 VERIFICATION_CHANNEL_ID = 1544663283653546024
 RESULT_CHANNEL_ID = 1544744659102736474
@@ -84,10 +85,30 @@ def obtenir_feuille_google():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    credentials = Credentials.from_service_account_file(
-        GOOGLE_CREDENTIALS_FILE,
-        scopes=scopes,
+    google_credentials_json = os.getenv(
+        "GOOGLE_CREDENTIALS_JSON"
     )
+
+    if google_credentials_json:
+        try:
+            credentials_info = json.loads(
+                google_credentials_json
+            )
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "GOOGLE_CREDENTIALS_JSON n'est pas un JSON valide."
+            ) from e
+
+        credentials = Credentials.from_service_account_info(
+            credentials_info,
+            scopes=scopes,
+        )
+
+    else:
+        credentials = Credentials.from_service_account_file(
+            GOOGLE_CREDENTIALS_FILE,
+            scopes=scopes,
+        )
 
     client = gspread.authorize(credentials)
 
@@ -1809,16 +1830,17 @@ if __name__ == "__main__":
             "par le token de ton bot Discord."
         )
 
-    if not os.path.exists(
-        GOOGLE_CREDENTIALS_FILE
-    ):
-
-        raise FileNotFoundError(
-            f"Fichier introuvable : "
-            f"{GOOGLE_CREDENTIALS_FILE}\n"
-            "Place le fichier JSON du compte "
-            "de service dans le même dossier que bot.py."
-        )
+    if not os.getenv("GOOGLE_CREDENTIALS_JSON"):
+        if not os.path.exists(
+            GOOGLE_CREDENTIALS_FILE
+        ):
+            raise FileNotFoundError(
+                f"Fichier introuvable : "
+                f"{GOOGLE_CREDENTIALS_FILE}\n"
+                "Place le fichier JSON du compte "
+                "de service dans le même dossier que bot.py, "
+                "ou définis GOOGLE_CREDENTIALS_JSON."
+            )
 
     bot.run(
         TOKEN
