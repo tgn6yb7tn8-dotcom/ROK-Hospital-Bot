@@ -11,9 +11,28 @@ from collections import Counter
 # CONFIGURATION
 # =========================================================
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+# Tesseract :
+# - Railway/Linux : binaire installé dans PATH par le Dockerfile
+# - Windows local : installation standard
+# - TESSERACT_CMD : permet de forcer un chemin si nécessaire
+import os
+import shutil
+
+_tesseract_env = os.getenv("TESSERACT_CMD")
+
+if _tesseract_env:
+    pytesseract.pytesseract.tesseract_cmd = _tesseract_env
+
+else:
+    _tesseract_linux = shutil.which("tesseract")
+
+    if _tesseract_linux:
+        pytesseract.pytesseract.tesseract_cmd = _tesseract_linux
+
+    else:
+        pytesseract.pytesseract.tesseract_cmd = (
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        )
 
 
 # =========================================================
@@ -1026,205 +1045,220 @@ def analyser_texte_ressource_token(
     )
 
 
-def _extraire_sequence_ressources_directe(
-    image
-):
-    """
-    OCR direct de la ligne des ressources.
-
-    Cette méthode est volontairement simple :
-    - on isole uniquement la barre où sont affichées les ressources ;
-    - PSM 7 force Tesseract à lire une seule ligne ;
-    - les montants avec K/M/B sont récupérés ;
-    - un dernier nombre court sans suffixe est accepté pour Gold
-      (ex. 144 sur la version téléphone).
-
-    Retourne 3 valeurs pour le layout téléphone :
-        Wood / Stone / Gold
-
-    ou 4 valeurs pour le layout PC :
-        Food / Wood / Stone / Gold
-    """
-
-    h, w = image.shape[:2]
-
-    # Plusieurs bandes proches permettent de supporter les petites
-    # différences de placement entre PC et téléphone.
-    ratios = [
-        (0.74, 0.88),
-        (0.76, 0.90),
-        (0.78, 0.92),
-    ]
-
-    sequences = []
-
-    for ratio_y1, ratio_y2 in ratios:
-
-        y1 = int(
-            h * ratio_y1
-        )
-
-        y2 = int(
-            h * ratio_y2
-        )
-
-        # La barre des ressources occupe la partie droite.
-        x1 = int(
-            w * 0.40
-        )
-
-        x2 = int(
-            w * 0.99
-        )
-
-        crop = image[
-            y1:y2,
-            x1:x2
-        ]
-
-        if crop.size == 0:
-            continue
-
-        for scale in (
-            5,
-            7,
-            9
-        ):
-
-            enlarged = cv2.resize(
-                crop,
-                None,
-                fx=scale,
-                fy=scale,
-                interpolation=cv2.INTER_CUBIC
-            )
-
-            variants = [
-                enlarged,
-                cv2.cvtColor(
-                    enlarged,
-                    cv2.COLOR_BGR2GRAY
-                )
-            ]
-
-            for variant in variants:
-
-                text_ocr = pytesseract.image_to_string(
-                    variant,
-                    config=(
-                        "--psm 7 "
-                        "-c tessedit_char_whitelist="
-                        "0123456789.KMB,"
-                    )
-                )
-
-                text_ocr = re.sub(
-                    r"\s+",
-                    " ",
-                    text_ocr.upper()
-                ).strip()
-
-                if not text_ocr:
-                    continue
-
-                # Toujours privilégier les nombres accompagnés
-                # de leur suffixe K/M/B.
-                matches = re.findall(
-                    r"\d+(?:[.,]\d+)?\s*[KMB]",
-                    text_ocr
-                )
-
-                sequence = []
-
-                for match in matches:
-
-                    valeur = convertir_ressource(
-                        match
-                    )
-
-                    if valeur is not None:
-                        sequence.append(
-                            valeur
-                        )
-
-                # Gold peut être affiché sans suffixe.
-                if sequence:
-
-                    dernier_match = re.search(
-                        r"(?:" +
-                        r"\d+(?:[.,]\d+)?\s*[KMB]" +
-                        r")\s*(\d{1,3})\s*$",
-                        text_ocr
-                    )
-
-                    if dernier_match:
-
-                        sequence.append(
-                            int(
-                                dernier_match.group(1)
-                            )
-                        )
-
-                # On ne garde que les formats réellement observés.
-                if len(sequence) in (
-                    3,
-                    4
-                ):
-
-                    sequences.append(
-                        tuple(sequence)
-                    )
-
-    if not sequences:
-        return []
-
-    # Vote majoritaire entre les différentes variantes OCR.
-    compteur = Counter(
-        sequences
-    )
-
-    meilleure, _ = compteur.most_common(
-        1
-    )[0]
-
-    return [
-        (
-            index,
-            valeur
-        )
-        for index, valeur in enumerate(
-            meilleure
-        )
-    ]
-
-
 def extraire_valeurs_barre_ressources(
     image
 ):
     """
-    Version finale de lecture des ressources PC/téléphone.
+    Lecture robuste de la barre Food/Wood/Stone/Gold sur PC et téléphone.
 
-    Le lecteur direct ci-dessus est prioritaire. L'ancien lecteur
-    dynamique reste en secours pour ne pas perdre les captures qui
-    ont un rendu inhabituel.
+    Layout téléphone observé :
+        2.1K  1.6K  144
+        -> Wood / Stone / Gold
+
+    Layout PC observé :
+        33.1M  10.4M  17.7M  2.2M
+        -> Food / Wood / Stone / Gold
     """
 
-    direct = _extraire_sequence_ressources_directe(
-        image
+    h, w = image.shape[:2]
+
+    # ---------------------------------------------------------
+    # PASSAGE 1 : OCR de la barre entière
+    # ---------------------------------------------------------
+    #
+    # La zone verticale est volontairement étroite pour exclure
+    # le timer de soin situé juste en dessous.
+    # ---------------------------------------------------------
+
+    x1 = int(
+        w * 0.25
     )
 
-    if len(direct) in (
-        3,
-        4
-    ):
+    x2 = int(
+        w * 0.99
+    )
 
-        return direct
+    y1 = int(
+        h * 0.70
+    )
+
+    y2 = int(
+        h * 0.86
+    )
+
+    crop = image[
+        y1:y2,
+        x1:x2
+    ]
+
+    if crop.size == 0:
+        return []
+
+    candidats_sequences = []
+
+    for scale in [
+        4,
+        6,
+        8
+    ]:
+
+        agrandi = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        variantes = [
+            agrandi,
+            cv2.cvtColor(
+                agrandi,
+                cv2.COLOR_BGR2GRAY
+            )
+        ]
+
+        for variante in variantes:
+
+            texte = pytesseract.image_to_string(
+                variante,
+                config=(
+                    "--psm 7 "
+                    "-c tessedit_char_whitelist="
+                    "0123456789.KMB,"
+                )
+            )
+
+            texte = re.sub(
+                r"\s+",
+                " ",
+                texte.upper()
+            ).strip()
+
+            if not texte:
+                continue
+
+            # -------------------------------------------------
+            # On récupère les montants AVEC suffixe d'abord.
+            # C'est le format normal pour Food/Wood/Stone.
+            # -------------------------------------------------
+
+            suffix_matches = list(
+                re.finditer(
+                    r"\d+(?:[.,]\d+)?\s*[KMB]",
+                    texte
+                )
+            )
+
+            sequence = []
+
+            for match in suffix_matches:
+
+                valeur = convertir_ressource(
+                    match.group(0)
+                )
+
+                if valeur is not None:
+                    sequence.append(
+                        valeur
+                    )
+
+            # -------------------------------------------------
+            # Gold peut être affiché sans suffixe :
+            # téléphone -> 144.
+            #
+            # On cherche UNIQUEMENT un nombre non-suffixé situé
+            # après le dernier montant suffixé, et proche de celui-ci.
+            # Cela évite les faux nombres comme "5" ou "7" issus
+            # du bouton/timer.
+            # -------------------------------------------------
+
+            if suffix_matches:
+
+                fin_dernier_suffixe = (
+                    suffix_matches[-1].end()
+                )
+
+                apres = texte[
+                    fin_dernier_suffixe:
+                ]
+
+                # Premier nombre court après le dernier suffixe.
+                # On limite à 3 chiffres pour le format Gold courant.
+                match_gold = re.search(
+                    r"^[\s,._-]*(\d{1,3})(?:\s|$)",
+                    apres
+                )
+
+                if match_gold:
+
+                    gold = int(
+                        match_gold.group(1)
+                    )
+
+                    sequence.append(
+                        gold
+                    )
+
+            # -------------------------------------------------
+            # Cas où l'OCR a reconnu directement 3 ou 4 montants.
+            # -------------------------------------------------
+
+            if len(sequence) in (
+                3,
+                4
+            ):
+
+                candidats_sequences.append(
+                    sequence
+                )
 
     # ---------------------------------------------------------
-    # FALLBACK DYNAMIQUE
+    # Choix de la séquence la plus cohérente.
     # ---------------------------------------------------------
 
-    h, w = image.shape[:2]
+    if candidats_sequences:
+
+        # On privilégie les séquences les plus longues et
+        # les plus répétées par les différentes passes OCR.
+        compte = {}
+
+        for sequence in candidats_sequences:
+
+            cle = tuple(
+                sequence
+            )
+
+            compte[cle] = (
+                compte.get(
+                    cle,
+                    0
+                )
+                +
+                1
+            )
+
+        meilleure = max(
+            compte.items(),
+            key=lambda item: (
+                item[1],
+                len(item[0])
+            )
+        )[0]
+
+        return [
+            (
+                index,
+                valeur
+            )
+            for index, valeur in enumerate(
+                meilleure
+            )
+        ]
+
+    # ---------------------------------------------------------
+    # PASSAGE 2 : fallback OCR dynamique
+    # ---------------------------------------------------------
 
     x1 = int(
         w * 0.25
@@ -1252,11 +1286,11 @@ def extraire_valeurs_barre_ressources(
 
     essais = []
 
-    for scale in (
+    for scale in [
         4,
         6,
         8
-    ):
+    ]:
 
         agrandi = cv2.resize(
             crop,
@@ -1278,11 +1312,11 @@ def extraire_valeurs_barre_ressources(
             )
         )
 
-        for seuil in (
+        for seuil in [
             120,
             150,
             180
-        ):
+        ]:
 
             _, binary = cv2.threshold(
                 gray,
@@ -1355,15 +1389,15 @@ def extraire_valeurs_barre_ressources(
                 )
             )
 
+            # Les valeurs sans suffixe ne sont acceptées que
+            # si elles sont plausibles pour Gold et dans la partie
+            # droite de la barre.
             x = (
-                data["left"][i]
-                /
-                scale
+                data["left"][i] / scale
                 +
                 x1
             )
 
-            # Pas de petit nombre sans suffixe sauf dans la zone Gold.
             if (
                 not a_suffixe
                 and
@@ -1385,12 +1419,13 @@ def extraire_valeurs_barre_ressources(
     if not detections:
         return []
 
-    detections.sort(
+    # Regrouper les valeurs identiques proches.
+    detections = sorted(
+        detections,
         key=lambda item:
         item[0]
     )
 
-    # Regroupement des doublons spatiaux.
     groupes = []
 
     for x, valeur in detections:
@@ -1417,6 +1452,7 @@ def extraire_valeurs_barre_ressources(
                 groupe["xs"].append(
                     x
                 )
+
                 groupe["x"] = (
                     sum(
                         groupe["xs"]
@@ -1426,6 +1462,7 @@ def extraire_valeurs_barre_ressources(
                         groupe["xs"]
                     )
                 )
+
                 trouve = True
                 break
 
@@ -1450,14 +1487,16 @@ def extraire_valeurs_barre_ressources(
         groupe["x"]
     )
 
-    soutenus = [
+    # Ne conserver que des valeurs soutenues.
+    groupes_soutenus = [
         groupe
         for groupe in groupes
         if groupe["votes"] >= 2
     ]
 
-    if soutenus:
-        groupes = soutenus
+    if groupes_soutenus:
+
+        groupes = groupes_soutenus
 
     return [
         (
