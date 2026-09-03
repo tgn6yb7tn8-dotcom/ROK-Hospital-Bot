@@ -28,7 +28,7 @@ COMMANDS_CHANNEL_ID = RESULT_CHANNEL_ID
 
 # Nom du rôle Discord autorisé à utiliser !delete et !update.
 # Les membres avec la permission Administrateur sont aussi autorisés.
-ADMIN_ROLE_NAME = "ROK Admin"
+ADMIN_ROLE_NAME = "Server • Admin"
 
 IMAGE_EXTENSIONS = {
     ".png",
