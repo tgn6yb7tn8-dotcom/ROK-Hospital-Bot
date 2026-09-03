@@ -12,8 +12,8 @@ from collections import Counter
 # =========================================================
 
 # Tesseract :
-# - Railway/Linux : binaire installé dans PATH par le Dockerfile
-# - Windows local : installation standard
+# - Railway/Linux : utilise automatiquement le binaire installé dans PATH
+# - Windows local : utilise l'installation standard
 # - TESSERACT_CMD : permet de forcer un chemin si nécessaire
 import os
 import shutil
@@ -24,10 +24,10 @@ if _tesseract_env:
     pytesseract.pytesseract.tesseract_cmd = _tesseract_env
 
 else:
-    _tesseract_linux = shutil.which("tesseract")
+    _tesseract_path = shutil.which("tesseract")
 
-    if _tesseract_linux:
-        pytesseract.pytesseract.tesseract_cmd = _tesseract_linux
+    if _tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = _tesseract_path
 
     else:
         pytesseract.pytesseract.tesseract_cmd = (
@@ -1612,6 +1612,378 @@ def lire_ressource(
 # ANALYSE DES RESSOURCES
 # =========================================================
 
+def _trouver_icones_ressources(
+    image
+):
+    """
+    Détecte les icônes de ressources sur PC et téléphone.
+
+    Signatures :
+    - food  : vert + jaune
+    - wood  : orange/brun
+    - stone : gros motif gris clair/bleuté
+    - gold  : jaune/orange sans vert
+
+    Le but est de ne jamais supposer que 3 ressources signifie
+    automatiquement Wood/Stone/Gold : le jeu peut afficher
+    Food/Wood/Gold, par exemple.
+    """
+
+    h, w = image.shape[:2]
+
+    # La barre est toujours dans la partie droite et basse du panneau.
+    x1 = int(w * 0.40)
+    x2 = int(w * 0.99)
+    y1 = int(h * 0.72)
+    y2 = int(h * 0.90)
+
+    roi = image[y1:y2, x1:x2]
+
+    if roi.size == 0:
+        return []
+
+    hsv = cv2.cvtColor(
+        roi,
+        cv2.COLOR_BGR2HSV
+    )
+
+    H, S, V = cv2.split(hsv)
+
+    def components(
+        mask,
+        min_area,
+        max_area=600
+    ):
+        count, labels, stats, centers = cv2.connectedComponentsWithStats(
+            mask.astype(np.uint8),
+            8
+        )
+
+        result = []
+
+        for i in range(1, count):
+
+            area = int(
+                stats[i, cv2.CC_STAT_AREA]
+            )
+
+            if not (
+                min_area
+                <=
+                area
+                <=
+                max_area
+            ):
+                continue
+
+            width = int(
+                stats[i, cv2.CC_STAT_WIDTH]
+            )
+
+            height = int(
+                stats[i, cv2.CC_STAT_HEIGHT]
+            )
+
+            if width < 7 or height < 7:
+                continue
+
+            cx, cy = centers[i]
+
+            result.append(
+                {
+                    "x":
+                        float(cx + x1),
+
+                    "y":
+                        float(cy + y1),
+
+                    "area":
+                        area,
+
+                    "width":
+                        width,
+
+                    "height":
+                        height
+                }
+            )
+
+        return result
+
+    # Food leaves.
+    food_mask = (
+        (H >= 35)
+        &
+        (H < 90)
+        &
+        (S > 110)
+        &
+        (V > 55)
+    )
+
+    # Wood log.
+    wood_mask = (
+        (H < 25)
+        &
+        (S > 100)
+        &
+        (V > 55)
+    )
+
+    # Gold coin / food grain highlights.
+    yellow_mask = (
+        (H >= 20)
+        &
+        (H < 42)
+        &
+        (S > 100)
+        &
+        (V > 70)
+    )
+
+    # Stone is grey/light-blue, so saturation is lower.
+    stone_mask = (
+        (S < 120)
+        &
+        (V > 125)
+    )
+
+    foods = components(
+        food_mask,
+        25
+    )
+
+    woods = components(
+        wood_mask,
+        60
+    )
+
+    yellows = components(
+        yellow_mask,
+        45
+    )
+
+    stones = components(
+        stone_mask,
+        120
+    )
+
+    icons = []
+
+    def add_icon(
+        x,
+        y,
+        resource
+    ):
+        # Merge close detections belonging to the same icon.
+        for icon in icons:
+
+            if (
+                abs(
+                    icon["x"]
+                    -
+                    x
+                )
+                <=
+                22
+                and
+                abs(
+                    icon["y"]
+                    -
+                    y
+                )
+                <=
+                22
+            ):
+
+                # Food is the most distinctive, then wood, stone, gold.
+                priority = {
+                    "food":
+                        4,
+
+                    "wood":
+                        3,
+
+                    "stone":
+                        2,
+
+                    "gold":
+                        1
+                }
+
+                if (
+                    priority[resource]
+                    >
+                    priority[icon["resource"]]
+                ):
+
+                    icon["resource"] = resource
+
+                return
+
+        icons.append(
+            {
+                "x":
+                    x,
+
+                "y":
+                    y,
+
+                "resource":
+                    resource
+            }
+        )
+
+    # Food: green is unique enough that it can be used directly.
+    for item in foods:
+
+        add_icon(
+            item["x"],
+            item["y"],
+            "food"
+        )
+
+    # Gold: yellow not associated with food.
+    for item in yellows:
+
+        near_food = any(
+            icon["resource"] == "food"
+            and
+            abs(
+                icon["x"]
+                -
+                item["x"]
+            )
+            <=
+            24
+            and
+            abs(
+                icon["y"]
+                -
+                item["y"]
+            )
+            <=
+            24
+            for icon in icons
+        )
+
+        if not near_food:
+
+            add_icon(
+                item["x"],
+                item["y"],
+                "gold"
+            )
+
+    # Wood: orange not already part of a gold coin.
+    for item in woods:
+
+        near_gold = any(
+            icon["resource"] == "gold"
+            and
+            abs(
+                icon["x"]
+                -
+                item["x"]
+            )
+            <=
+            24
+            and
+            abs(
+                icon["y"]
+                -
+                item["y"]
+            )
+            <=
+            24
+            for icon in icons
+        )
+
+        if not near_gold:
+
+            add_icon(
+                item["x"],
+                item["y"],
+                "wood"
+            )
+
+    # Stone: keep only reasonably compact large grey blobs.
+    for item in stones:
+
+        if (
+            item["width"] >= 10
+            and
+            item["height"] >= 10
+        ):
+
+            add_icon(
+                item["x"],
+                item["y"],
+                "stone"
+            )
+
+    # A few OCR/background components may still survive; keep icons
+    # ordered and merge very close duplicates.
+    icons.sort(
+        key=lambda icon:
+        icon["x"]
+    )
+
+    cleaned = []
+
+    for icon in icons:
+
+        if not cleaned:
+
+            cleaned.append(
+                icon
+            )
+
+            continue
+
+        previous = cleaned[-1]
+
+        if (
+            abs(
+                icon["x"]
+                -
+                previous["x"]
+            )
+            <=
+            30
+        ):
+
+            priority = {
+                "food":
+                    4,
+
+                "wood":
+                    3,
+
+                "stone":
+                    2,
+
+                "gold":
+                    1
+            }
+
+            if (
+                priority[icon["resource"]]
+                >
+                priority[previous["resource"]]
+            ):
+
+                cleaned[-1] = icon
+
+        else:
+
+            cleaned.append(
+                icon
+            )
+
+    return cleaned
+
+
 def analyser_ressources(
     image
 ):
@@ -1660,8 +2032,56 @@ def analyser_ressources(
         for _, valeur in detections
     ]
 
-    if len(valeurs) >= 4:
+    # ---------------------------------------------------------
+    # IDENTIFICATION DU TYPE DE RESSOURCE PAR L'ICÔNE
+    # ---------------------------------------------------------
+    #
+    # Ne plus supposer :
+    #   3 valeurs = Wood / Stone / Gold
+    #
+    # Une capture téléphone peut par exemple contenir :
+    #   Food / Wood / Gold
+    #
+    # Les icônes sont donc détectées visuellement et associées
+    # aux valeurs dans leur ordre gauche -> droite.
+    # ---------------------------------------------------------
 
+    nourriture = None
+    bois = None
+    pierre = None
+    or_ = None
+
+    icones = _trouver_icones_ressources(
+        image
+    )
+
+    if len(icones) == len(valeurs):
+
+        for icon, valeur in zip(
+            icones,
+            valeurs
+        ):
+
+            if icon["resource"] == "food":
+
+                nourriture = valeur
+
+            elif icon["resource"] == "wood":
+
+                bois = valeur
+
+            elif icon["resource"] == "stone":
+
+                pierre = valeur
+
+            elif icon["resource"] == "gold":
+
+                or_ = valeur
+
+    elif len(valeurs) >= 4:
+
+        # Fallback PC historique si une icône est trop faible
+        # pour être détectée.
         nourriture = valeurs[0]
         bois = valeurs[1]
         pierre = valeurs[2]
@@ -1669,9 +2089,7 @@ def analyser_ressources(
 
     elif len(valeurs) == 3:
 
-        # Version téléphone observée :
-        # Food n'est pas affichée et les trois montants sont :
-        # Wood / Stone / Gold.
+        # Fallback téléphone historique.
         nourriture = None
         bois = valeurs[0]
         pierre = valeurs[1]
