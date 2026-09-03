@@ -1409,24 +1409,6 @@ async def on_message(
         return
 
     # -----------------------------------------------------
-    # COMMANDES DISCORD
-    # -----------------------------------------------------
-    #
-    # Si le message commence par le préfixe "!", on le traite
-    # directement comme une commande, quel que soit le salon.
-    # Il ne passe donc jamais dans le système de vérification OCR.
-
-    if message.content.strip().startswith(
-        bot.command_prefix
-    ):
-
-        await bot.process_commands(
-            message
-        )
-
-        return
-
-    # -----------------------------------------------------
     # SALON DE VERIFICATION
     # -----------------------------------------------------
 
@@ -1795,9 +1777,6 @@ async def on_message(
                         ),
                     )
 
-                    await supprimer_message_source(
-                        message
-                    )
 
                     print(
                         "❌ Analyse invalide : "
@@ -1864,9 +1843,6 @@ async def on_message(
                         ),
                     )
 
-                    await supprimer_message_source(
-                        message
-                    )
 
                     return
 
@@ -1980,9 +1956,6 @@ async def on_message(
                         ),
                     )
 
-                    await supprimer_message_source(
-                        message
-                    )
 
                 except Exception as send_error:
 
