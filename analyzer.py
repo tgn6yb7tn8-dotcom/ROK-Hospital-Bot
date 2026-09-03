@@ -1984,22 +1984,273 @@ def _trouver_icones_ressources(
     return cleaned
 
 
-def analyser_ressources(
-    image
+def _lire_montant_a_cote_icone(
+    image,
+    icon,
+    autres_icones
 ):
+    """
+    Lit uniquement le montant situé à droite d'une icône de ressource.
 
-    detections = (
-        extraire_valeurs_barre_ressources(
-            image
+    C'est volontairement plus précis que l'ancien OCR de toute la barre :
+    les nombres globaux de la ville et les nombres du panneau de troupes
+    ne peuvent plus être confondus avec les coûts de soins.
+    """
+
+    h, w = image.shape[:2]
+
+    x = float(
+        icon["x"]
+    )
+
+    y = float(
+        icon["y"]
+    )
+
+    # La prochaine icône sert de frontière droite pour le texte actuel.
+    prochaines = [
+        autre["x"]
+        for autre in autres_icones
+        if autre["x"] > x
+    ]
+
+    if prochaines:
+
+        limite_droite = min(
+            prochaines
+        ) - 8
+
+    else:
+
+        limite_droite = min(
+            w - 5,
+            x + max(
+                95,
+                w * 0.12
+            )
+        )
+
+    gauche = int(
+        min(
+            w - 1,
+            x + 8
         )
     )
 
-    if len(detections) < 2:
+    droite = int(
+        max(
+            gauche + 10,
+            limite_droite
+        )
+    )
+
+    haut = int(
+        max(
+            0,
+            y - max(
+                18,
+                h * 0.025
+            )
+        )
+    )
+
+    bas = int(
+        min(
+            h,
+            y + max(
+                18,
+                h * 0.025
+            )
+        )
+    )
+
+    crop = image[
+        haut:bas,
+        gauche:droite
+    ]
+
+    if crop.size == 0:
+        return None
+
+    candidats = []
+
+    for scale in (
+        6,
+        8,
+        10,
+        12
+    ):
+
+        agrandi = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_LANCZOS4
+        )
+
+        gray = cv2.cvtColor(
+            agrandi,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        variantes = [
+            gray
+        ]
+
+        for seuil in (
+            80,
+            100,
+            120,
+            140,
+            160,
+            180,
+            200
+        ):
+
+            _, binary = cv2.threshold(
+                gray,
+                seuil,
+                255,
+                cv2.THRESH_BINARY
+            )
+
+            variantes.append(
+                binary
+            )
+
+        for variante in variantes:
+
+            for psm in (
+                6,
+                7,
+                11
+            ):
+
+                try:
+
+                    texte = pytesseract.image_to_string(
+                        variante,
+                        config=(
+                            f"--psm {psm} "
+                            "-c tessedit_char_whitelist="
+                            "0123456789.KMB"
+                        )
+                    )
+
+                except Exception:
+
+                    continue
+
+                texte = texte.upper().strip()
+
+                if not texte:
+                    continue
+
+                # On recherche un montant décimal avec suffixe en priorité.
+                matches = re.findall(
+                    r"\d+(?:[.,]\d+)?\s*[KMB]",
+                    texte
+                )
+
+                for match in matches:
+
+                    valeur = convertir_ressource(
+                        match
+                    )
+
+                    if (
+                        valeur is not None
+                        and
+                        valeur > 0
+                    ):
+
+                        candidats.append(
+                            (
+                                valeur,
+                                True
+                            )
+                        )
+
+                # Gold peut être affiché sans suffixe :
+                # 137 / 144 / etc.
+                if icon["resource"] == "gold":
+
+                    sans_suffixe = re.fullmatch(
+                        r"\s*(\d{1,4})\s*",
+                        texte
+                    )
+
+                    if sans_suffixe:
+
+                        valeur = int(
+                            sans_suffixe.group(1)
+                        )
+
+                        if valor := (
+                            valeur > 0
+                        ):
+
+                            candidats.append(
+                                (
+                                    valeur,
+                                    False
+                                )
+                            )
+
+    if not candidats:
+        return None
+
+    # Les lectures avec suffixe sont prioritaires.
+    suffixes = [
+        valeur
+        for valeur, avec_suffixe in candidats
+        if avec_suffixe
+    ]
+
+    base_vote = (
+        suffixes
+        if suffixes
+        else
+        [
+            valeur
+            for valeur, _ in candidats
+        ]
+    )
+
+    compteur = Counter(
+        base_vote
+    )
+
+    return compteur.most_common(
+        1
+    )[0][0]
+
+
+def analyser_ressources(
+    image
+):
+    """
+    Analyse les ressources de la fenêtre d'hôpital.
+
+    L'ordre des ressources n'est jamais supposé.
+    Le type est donné par l'icône détectée à gauche de chaque montant.
+
+    Cela gère notamment :
+        Food / Wood / Gold
+        Wood / Stone / Gold
+        Food / Wood / Stone / Gold
+    """
+
+    icones = _trouver_icones_ressources(
+        image
+    )
+
+    if not icones:
 
         print()
         print(
-            "Ressources : non affichées "
-            "(soins déjà lancés ou barre absente)."
+            "Ressources : aucune icône détectée."
         )
 
         return {
@@ -2016,152 +2267,85 @@ def analyser_ressources(
                 None
         }
 
-    # ---------------------------------------------------------
-    # Les ressources sont dans l'ordre gauche -> droite.
-    #
-    # 4 valeurs :
-    # Food / Wood / Stone / Gold
-    #
-    # 3 valeurs :
-    # Dans la version téléphone montrée, Food n'est pas affichée
-    # et on a Wood / Stone / Gold.
-    # ---------------------------------------------------------
-
-    valeurs = [
-        valeur
-        for _, valeur in detections
-    ]
-
-    # ---------------------------------------------------------
-    # IDENTIFICATION DU TYPE DE RESSOURCE PAR L'ICÔNE
-    # ---------------------------------------------------------
-    #
-    # Ne plus supposer :
-    #   3 valeurs = Wood / Stone / Gold
-    #
-    # Une capture téléphone peut par exemple contenir :
-    #   Food / Wood / Gold
-    #
-    # Les icônes sont donc détectées visuellement et associées
-    # aux valeurs dans leur ordre gauche -> droite.
-    # ---------------------------------------------------------
-
-    nourriture = None
-    bois = None
-    pierre = None
-    or_ = None
-
-    icones = _trouver_icones_ressources(
-        image
+    # Trier les icônes de gauche à droite.
+    icones = sorted(
+        icones,
+        key=lambda icon:
+        icon["x"]
     )
 
-    if len(icones) == len(valeurs):
+    resultats = {
+        "food":
+            None,
 
-        for icon, valeur in zip(
-            icones,
-            valeurs
-        ):
+        "wood":
+            None,
 
-            if icon["resource"] == "food":
+        "stone":
+            None,
 
-                nourriture = valeur
+        "gold":
+            None
+    }
 
-            elif icon["resource"] == "wood":
+    for icon in icones:
 
-                bois = valeur
+        valeur = _lire_montant_a_cote_icone(
+            image,
+            icon,
+            icones
+        )
 
-            elif icon["resource"] == "stone":
+        if valeur is None:
+            continue
 
-                pierre = valeur
+        # Une seule valeur par type.
+        # En cas de doublon, garder la première lecture valide.
+        if resultats[
+            icon["resource"]
+        ] is None:
 
-            elif icon["resource"] == "gold":
-
-                or_ = valeur
-
-    elif len(valeurs) >= 4:
-
-        # Fallback PC historique si une icône est trop faible
-        # pour être détectée.
-        nourriture = valeurs[0]
-        bois = valeurs[1]
-        pierre = valeurs[2]
-        or_ = valeurs[3]
-
-    elif len(valeurs) == 3:
-
-        # Fallback téléphone historique.
-        nourriture = None
-        bois = valeurs[0]
-        pierre = valeurs[1]
-        or_ = valeurs[2]
-
-    else:
-
-        # Cas inhabituel : 2 ressources visibles.
-        # On utilise leurs positions horizontales pour déterminer
-        # les ressources connues.
-        positions = [
-            x
-            for x, _ in detections
-        ]
-
-        nourriture = None
-        bois = None
-        pierre = None
-        or_ = None
-
-        # Position relative dans la barre.
-        for x, valeur in detections:
-
-            relative = x / image.shape[1]
-
-            if relative < 0.55:
-
-                # Dans la version téléphone observée, le premier
-                # montant visible à cet endroit est le bois.
-                bois = valeur
-
-            elif relative < 0.78:
-
-                pierre = valeur
-
-            else:
-
-                or_ = valeur
+            resultats[
+                icon["resource"]
+            ] = valeur
 
     print()
     print(
+        "Ressources identifiées par icône :"
+    )
+
+    print(
         "Nourriture :",
-        nourriture
+        resultats["food"]
     )
 
     print(
         "Bois       :",
-        bois
+        resultats["wood"]
     )
 
     print(
         "Pierre     :",
-        pierre
+        resultats["stone"]
     )
 
     print(
         "Or         :",
-        or_
+        resultats["gold"]
     )
 
     return {
         "nourriture":
-            nourriture,
+            resultats["food"],
 
         "bois":
-            bois,
+            resultats["wood"],
 
         "pierre":
-            pierre,
+            resultats["stone"],
 
         "or":
-            or_
+            resultats["gold"]
     }
 
 
