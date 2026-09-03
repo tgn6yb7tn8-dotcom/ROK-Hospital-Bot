@@ -20,7 +20,7 @@ from analyzer import analyser_plusieurs_images
 TOKEN = os.getenv("DISCORD_TOKEN", "TON_TOKEN_ICI")
 
 VERIFICATION_CHANNEL_ID = 1544613786952925326
-RESULT_CHANNEL_ID = 1544613786952925326
+RESULT_CHANNEL_ID = 1383758654901194875
 
 # Les commandes de gestion seront utilisables uniquement
 # dans le salon des résultats.
@@ -1261,6 +1261,8 @@ async def rokhelp_command(
         "`@Emi's slave 2.0` → statistiques globales\n\n"
         "`!latest <Player ID>` → dernière vérification\n"
         "`!history <Player ID>` → historique (10 dernières)\n\n"
+        "📸 Une vérification n'est lancée que lorsqu'une "
+        "capture d'écran est jointe.\n"
         "🔢 A Player ID must contain exactly 9 digits.\n"
         "🔒 Un Player ID déjà présent dans `hopital` "
         "ne peut pas être soumis une deuxième fois. "
@@ -1409,10 +1411,47 @@ async def on_message(
         return
 
     # -----------------------------------------------------
+    # COMMANDES DISCORD
+    # -----------------------------------------------------
+    #
+    # Si le message commence par le préfixe "!", on le traite
+    # directement comme une commande, quel que soit le salon.
+    # Il ne passe donc jamais dans le système de vérification OCR.
+
+    if message.content.strip().startswith(
+        bot.command_prefix
+    ):
+
+        await bot.process_commands(
+            message
+        )
+
+        return
+
+    # -----------------------------------------------------
     # SALON DE VERIFICATION
     # -----------------------------------------------------
 
     if message.channel.id == VERIFICATION_CHANNEL_ID:
+
+        # Un message normal dans ce salon doit rester totalement
+        # ignoré. Le bot ne déclenche une vérification que si le
+        # message contient au moins une véritable capture d'écran.
+        #
+        # Ainsi, une conversation normale entre membres :
+        # "salut", "merci", etc. -> aucune réponse, aucun DM.
+
+        contient_image = any(
+            os.path.splitext(
+                attachment.filename.lower()
+            )[1]
+            in IMAGE_EXTENSIONS
+            for attachment in message.attachments
+        )
+
+        if not contient_image:
+
+            return
 
         print()
         print(
@@ -1777,6 +1816,9 @@ async def on_message(
                         ),
                     )
 
+                    await supprimer_message_source(
+                        message
+                    )
 
                     print(
                         "❌ Analyse invalide : "
@@ -1843,6 +1885,9 @@ async def on_message(
                         ),
                     )
 
+                    await supprimer_message_source(
+                        message
+                    )
 
                     return
 
@@ -1956,6 +2001,9 @@ async def on_message(
                         ),
                     )
 
+                    await supprimer_message_source(
+                        message
+                    )
 
                 except Exception as send_error:
 
