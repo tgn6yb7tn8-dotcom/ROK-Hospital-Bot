@@ -1439,8 +1439,42 @@ async def on_message(
     # -----------------------------------------------------
     # SALON DE VERIFICATION
     # -----------------------------------------------------
+    # -----------------------------------------------------
+    # SALON DE VERIFICATION
+    # -----------------------------------------------------
+    #
+    # IMPORTANT :
+    # Une conversation normale doit être totalement silencieuse.
+    # Une vérification ne commence QUE si :
+    #   1) le message est dans le salon de vérification ;
+    #   2) le contenu est exactement un ID de 9 chiffres ;
+    #   3) au moins une image valide est jointe.
+    #
+    # Ainsi :
+    #   "salut"                 -> ignoré
+    #   "salut, ça va ?"        -> ignoré
+    #   "219315453"             -> ignoré (pas de capture)
+    #   "219315453 + capture"   -> vérification
+    #   "!delete ..."           -> traité comme commande plus haut
 
-    if message.channel.id == VERIFICATION_CHANNEL_ID:
+    contenu = message.content.strip()
+
+    images_valides = [
+        attachment
+        for attachment in message.attachments
+        if os.path.splitext(
+            attachment.filename.lower()
+        )[1] in IMAGE_EXTENSIONS
+    ]
+
+    if (
+        not contenu.isdigit()
+        or
+        len(contenu) != 9
+        or
+        not images_valides
+    ):
+        return
 
         print()
         print(
