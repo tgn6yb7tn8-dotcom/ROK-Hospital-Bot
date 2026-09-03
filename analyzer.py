@@ -11,9 +11,28 @@ from collections import Counter
 # CONFIGURATION
 # =========================================================
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+# Tesseract :
+# - Windows local : installation standard
+# - Railway/Linux : binaire trouvé automatiquement dans PATH
+# - TESSERACT_CMD : permet de forcer un chemin si nécessaire
+import os
+import shutil
+
+_tesseract_env = os.getenv("TESSERACT_CMD")
+
+if _tesseract_env:
+    pytesseract.pytesseract.tesseract_cmd = _tesseract_env
+
+else:
+    _tesseract_linux = shutil.which("tesseract")
+
+    if _tesseract_linux:
+        pytesseract.pytesseract.tesseract_cmd = _tesseract_linux
+
+    else:
+        pytesseract.pytesseract.tesseract_cmd = (
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        )
 
 
 # =========================================================
