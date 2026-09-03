@@ -11,28 +11,9 @@ from collections import Counter
 # CONFIGURATION
 # =========================================================
 
-# Tesseract :
-# - Windows local : installation standard
-# - Railway/Linux : binaire trouvé automatiquement dans PATH
-# - TESSERACT_CMD : permet de forcer un chemin si nécessaire
-import os
-import shutil
-
-_tesseract_env = os.getenv("TESSERACT_CMD")
-
-if _tesseract_env:
-    pytesseract.pytesseract.tesseract_cmd = _tesseract_env
-
-else:
-    _tesseract_linux = shutil.which("tesseract")
-
-    if _tesseract_linux:
-        pytesseract.pytesseract.tesseract_cmd = _tesseract_linux
-
-    else:
-        pytesseract.pytesseract.tesseract_cmd = (
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        )
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+)
 
 
 # =========================================================
@@ -1049,39 +1030,41 @@ def extraire_valeurs_barre_ressources(
     image
 ):
     """
-    OCR dynamique de toute la barre de ressources.
+    Lecture robuste de la barre Food/Wood/Stone/Gold sur PC et téléphone.
 
-    Contrairement à l'ancienne méthode, on ne dépend pas d'une
-    résolution précise ni de quatre crops fixes.
+    Layout téléphone observé :
+        2.1K  1.6K  144
+        -> Wood / Stone / Gold
 
-    Cela permet de fonctionner avec :
-    - capture PC ;
-    - capture téléphone ;
-    - barre avec 4 ressources ;
-    - barre avec seulement 3 ressources visibles.
-
-    Retourne les valeurs de gauche à droite.
+    Layout PC observé :
+        33.1M  10.4M  17.7M  2.2M
+        -> Food / Wood / Stone / Gold
     """
 
     h, w = image.shape[:2]
 
-    # La barre est toujours située dans la partie inférieure droite
-    # de l'écran de soins. Les pourcentages sont volontairement
-    # suffisamment larges pour couvrir PC et téléphone.
+    # ---------------------------------------------------------
+    # PASSAGE 1 : OCR de la barre entière
+    # ---------------------------------------------------------
+    #
+    # La zone verticale est volontairement étroite pour exclure
+    # le timer de soin situé juste en dessous.
+    # ---------------------------------------------------------
+
     x1 = int(
-        w * 0.38
+        w * 0.25
     )
 
     x2 = int(
-        w * 0.98
+        w * 0.99
     )
 
     y1 = int(
-        h * 0.65
+        h * 0.70
     )
 
     y2 = int(
-        h * 0.82
+        h * 0.86
     )
 
     crop = image[
@@ -1092,14 +1075,202 @@ def extraire_valeurs_barre_ressources(
     if crop.size == 0:
         return []
 
-    # Plusieurs tailles d'agrandissement pour compenser les
-    # différences de résolution PC/téléphone.
+    candidats_sequences = []
+
+    for scale in [
+        4,
+        6,
+        8
+    ]:
+
+        agrandi = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        variantes = [
+            agrandi,
+            cv2.cvtColor(
+                agrandi,
+                cv2.COLOR_BGR2GRAY
+            )
+        ]
+
+        for variante in variantes:
+
+            texte = pytesseract.image_to_string(
+                variante,
+                config=(
+                    "--psm 7 "
+                    "-c tessedit_char_whitelist="
+                    "0123456789.KMB,"
+                )
+            )
+
+            texte = re.sub(
+                r"\s+",
+                " ",
+                texte.upper()
+            ).strip()
+
+            if not texte:
+                continue
+
+            # -------------------------------------------------
+            # On récupère les montants AVEC suffixe d'abord.
+            # C'est le format normal pour Food/Wood/Stone.
+            # -------------------------------------------------
+
+            suffix_matches = list(
+                re.finditer(
+                    r"\d+(?:[.,]\d+)?\s*[KMB]",
+                    texte
+                )
+            )
+
+            sequence = []
+
+            for match in suffix_matches:
+
+                valeur = convertir_ressource(
+                    match.group(0)
+                )
+
+                if valeur is not None:
+                    sequence.append(
+                        valeur
+                    )
+
+            # -------------------------------------------------
+            # Gold peut être affiché sans suffixe :
+            # téléphone -> 144.
+            #
+            # On cherche UNIQUEMENT un nombre non-suffixé situé
+            # après le dernier montant suffixé, et proche de celui-ci.
+            # Cela évite les faux nombres comme "5" ou "7" issus
+            # du bouton/timer.
+            # -------------------------------------------------
+
+            if suffix_matches:
+
+                fin_dernier_suffixe = (
+                    suffix_matches[-1].end()
+                )
+
+                apres = texte[
+                    fin_dernier_suffixe:
+                ]
+
+                # Premier nombre court après le dernier suffixe.
+                # On limite à 3 chiffres pour le format Gold courant.
+                match_gold = re.search(
+                    r"^[\s,._-]*(\d{1,3})(?:\s|$)",
+                    apres
+                )
+
+                if match_gold:
+
+                    gold = int(
+                        match_gold.group(1)
+                    )
+
+                    sequence.append(
+                        gold
+                    )
+
+            # -------------------------------------------------
+            # Cas où l'OCR a reconnu directement 3 ou 4 montants.
+            # -------------------------------------------------
+
+            if len(sequence) in (
+                3,
+                4
+            ):
+
+                candidats_sequences.append(
+                    sequence
+                )
+
+    # ---------------------------------------------------------
+    # Choix de la séquence la plus cohérente.
+    # ---------------------------------------------------------
+
+    if candidats_sequences:
+
+        # On privilégie les séquences les plus longues et
+        # les plus répétées par les différentes passes OCR.
+        compte = {}
+
+        for sequence in candidats_sequences:
+
+            cle = tuple(
+                sequence
+            )
+
+            compte[cle] = (
+                compte.get(
+                    cle,
+                    0
+                )
+                +
+                1
+            )
+
+        meilleure = max(
+            compte.items(),
+            key=lambda item: (
+                item[1],
+                len(item[0])
+            )
+        )[0]
+
+        return [
+            (
+                index,
+                valeur
+            )
+            for index, valeur in enumerate(
+                meilleure
+            )
+        ]
+
+    # ---------------------------------------------------------
+    # PASSAGE 2 : fallback OCR dynamique
+    # ---------------------------------------------------------
+
+    x1 = int(
+        w * 0.25
+    )
+
+    x2 = int(
+        w * 0.99
+    )
+
+    y1 = int(
+        h * 0.64
+    )
+
+    y2 = int(
+        h * 0.88
+    )
+
+    crop = image[
+        y1:y2,
+        x1:x2
+    ]
+
+    if crop.size == 0:
+        return []
+
     essais = []
 
     for scale in [
         4,
         6,
-        8,
+        8
     ]:
 
         agrandi = cv2.resize(
@@ -1125,7 +1296,7 @@ def extraire_valeurs_barre_ressources(
         for seuil in [
             120,
             150,
-            180,
+            180
         ]:
 
             _, binary = cv2.threshold(
@@ -1156,8 +1327,6 @@ def extraire_valeurs_barre_ressources(
             output_type=pytesseract.Output.DICT
         )
 
-        tokens = []
-
         for i, brut in enumerate(
             data["text"]
         ):
@@ -1168,210 +1337,79 @@ def extraire_valeurs_barre_ressources(
                 continue
 
             try:
-
                 confiance = float(
                     data["conf"][i]
                 )
-
             except (
                 ValueError,
                 TypeError
             ):
-
                 confiance = 0
 
             if confiance < 15:
                 continue
 
+            propre = (
+                brut.upper()
+                .replace(",", ".")
+                .replace(" ", "")
+            )
+
+            valeur = convertir_ressource(
+                propre
+            )
+
+            if valeur is None:
+                continue
+
+            a_suffixe = propre.endswith(
+                (
+                    "K",
+                    "M",
+                    "B"
+                )
+            )
+
+            # Les valeurs sans suffixe ne sont acceptées que
+            # si elles sont plausibles pour Gold et dans la partie
+            # droite de la barre.
             x = (
                 data["left"][i] / scale
                 +
                 x1
             )
 
-            y = (
-                data["top"][i] / scale
-                +
-                y1
-            )
-
-            largeur = (
-                data["width"][i]
-                /
-                scale
-            )
-
-            centre_y = (
-                y
-                +
-                (
-                    data["height"][i]
-                    /
-                    scale
-                )
-                /
-                2
-            )
-
-            tokens.append(
-                {
-                    "texte":
-                        brut,
-
-                    "x":
-                        x,
-
-                    "centre_y":
-                        centre_y,
-
-                    "largeur":
-                        largeur
-                }
-            )
-
-        # -----------------------------------------------------
-        # Fusion des tokens du type "33.1" + "M"
-        # -----------------------------------------------------
-
-        tokens = sorted(
-            tokens,
-            key=lambda token:
-            token["x"]
-        )
-
-        i = 0
-
-        while i < len(tokens):
-
-            token = tokens[i]
-
-            valeur = analyser_texte_ressource_token(
-                token["texte"]
-            )
-
-            # Cas où OCR sépare le nombre et le suffixe :
-            # "33.1" puis "M".
             if (
-                valeur is None
+                not a_suffixe
                 and
-                i + 1 < len(tokens)
+                not (
+                    valeur <= 999
+                    and
+                    x / w >= 0.70
+                )
             ):
+                continue
 
-                prochain = tokens[i + 1]
-
-                if (
-                    prochain["texte"].upper()
-                    in
-                    {
-                        "K",
-                        "M",
-                        "B"
-                    }
-                    and
-                    abs(
-                        prochain["centre_y"]
-                        -
-                        token["centre_y"]
-                    )
-                    <=
-                    25
-                    and
-                    (
-                        prochain["x"]
-                        -
-                        (
-                            token["x"]
-                            +
-                            token["largeur"]
-                        )
-                    )
-                    <=
-                    35
-                ):
-
-                    valeur = analyser_texte_ressource_token(
-                        token["texte"]
-                        +
-                        prochain["texte"]
-                    )
-
-                    if valeur is not None:
-
-                        centre_x = (
-                            token["x"]
-                            +
-                            prochain["x"]
-                        ) / 2
-
-                        detections.append(
-                            (
-                                centre_x,
-                                valeur
-                            )
-                        )
-
-                        i += 2
-                        continue
-
-            if valeur is not None:
-
-                texte_normalise = (
-                    token["texte"]
-                    .upper()
-                    .replace(",", ".")
-                    .replace(" ", "")
+            detections.append(
+                (
+                    x,
+                    valeur
                 )
-
-                # On accepte les montants sans suffixe (ex. 144)
-                # uniquement dans la partie Gold à droite, ou les
-                # gros montants >= 1000. Cela évite qu'un petit bruit
-                # OCR comme "62" devienne une ressource.
-                a_suffixe = texte_normalise.endswith(
-                    (
-                        "K",
-                        "M",
-                        "B"
-                    )
-                )
-
-                est_position_gold = (
-                    token["x"] / w
-                    >=
-                    0.76
-                )
-
-                if (
-                    a_suffixe
-                    or
-                    valeur >= 1000
-                    or
-                    est_position_gold
-                ):
-
-                    detections.append(
-                        (
-                            token["x"],
-                            valeur
-                        )
-                    )
-
-            i += 1
+            )
 
     if not detections:
         return []
 
-    # ---------------------------------------------------------
-    # Regroupement des mêmes valeurs OCR issues des différents
-    # essais de seuil / résolution.
-    # ---------------------------------------------------------
-
-    groupes = []
-
-    for x, valeur in sorted(
+    # Regrouper les valeurs identiques proches.
+    detections = sorted(
         detections,
         key=lambda item:
         item[0]
-    ):
+    )
+
+    groupes = []
+
+    for x, valeur in detections:
 
         trouve = False
 
@@ -1381,21 +1419,22 @@ def extraire_valeurs_barre_ressources(
                 abs(
                     x
                     -
-                    groupe["x_moyen"]
+                    groupe["x"]
                 )
                 <=
-                45
+                55
                 and
                 valeur
                 ==
                 groupe["valeur"]
             ):
 
+                groupe["votes"] += 1
                 groupe["xs"].append(
                     x
                 )
 
-                groupe["x_moyen"] = (
+                groupe["x"] = (
                     sum(
                         groupe["xs"]
                     )
@@ -1405,131 +1444,47 @@ def extraire_valeurs_barre_ressources(
                     )
                 )
 
-                groupe["votes"] += 1
-
                 trouve = True
-
                 break
 
         if not trouve:
 
             groupes.append(
                 {
-                    "x_moyen":
+                    "x":
                         x,
-
                     "xs":
                         [x],
-
                     "valeur":
                         valeur,
-
                     "votes":
                         1
                 }
             )
 
-    # On garde les positions suffisamment soutenues.
-    groupes = [
+    groupes = sorted(
+        groupes,
+        key=lambda groupe:
+        groupe["x"]
+    )
+
+    # Ne conserver que des valeurs soutenues.
+    groupes_soutenus = [
         groupe
         for groupe in groupes
         if groupe["votes"] >= 2
     ]
 
-    # Si le téléphone/PC donne peu de votes à un montant,
-    # on garde aussi les meilleurs candidats pour ne pas perdre
-    # une ressource parfaitement lisible.
-    if not groupes:
+    if groupes_soutenus:
 
-        groupes = []
-
-        for x, valeur in detections:
-
-            existe = False
-
-            for groupe in groupes:
-
-                if (
-                    abs(
-                        x
-                        -
-                        groupe["x_moyen"]
-                    )
-                    <=
-                    45
-                    and
-                    valeur
-                    ==
-                    groupe["valeur"]
-                ):
-
-                    existe = True
-                    break
-
-            if not existe:
-
-                groupes.append(
-                    {
-                        "x_moyen":
-                            x,
-
-                        "valeur":
-                            valeur
-                    }
-                )
-
-    # Fusionner les groupes proches mais garder une valeur stable.
-    groupes = sorted(
-        groupes,
-        key=lambda groupe:
-        groupe["x_moyen"]
-    )
-
-    resultat = []
-
-    for groupe in groupes:
-
-        if not resultat:
-
-            resultat.append(
-                groupe
-            )
-
-            continue
-
-        precedent = resultat[-1]
-
-        if (
-            abs(
-                groupe["x_moyen"]
-                -
-                precedent["x_moyen"]
-            )
-            <=
-            55
-        ):
-
-            # Même ressource détectée plusieurs fois.
-            if (
-                groupe.get("votes", 0)
-                >
-                precedent.get("votes", 0)
-            ):
-
-                resultat[-1] = groupe
-
-        else:
-
-            resultat.append(
-                groupe
-            )
+        groupes = groupes_soutenus
 
     return [
         (
-            groupe["x_moyen"],
+            groupe["x"],
             groupe["valeur"]
         )
-        for groupe in resultat
+        for groupe in groupes
     ]
 
 
