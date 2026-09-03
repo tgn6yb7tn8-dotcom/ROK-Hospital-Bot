@@ -2075,10 +2075,9 @@ def _lire_montant_a_cote_icone(
     candidats = []
 
     for scale in (
-        6,
-        8,
-        10,
-        12
+        2,
+        3,
+        4
     ):
 
         agrandi = cv2.resize(
@@ -2086,7 +2085,7 @@ def _lire_montant_a_cote_icone(
             None,
             fx=scale,
             fy=scale,
-            interpolation=cv2.INTER_LANCZOS4
+            interpolation=cv2.INTER_CUBIC
         )
 
         gray = cv2.cvtColor(
