@@ -1652,7 +1652,7 @@ def _trouver_icones_ressources(
     def components(
         mask,
         min_area,
-        max_area=600
+        max_area=1200
     ):
         count, labels, stats, centers = cv2.connectedComponentsWithStats(
             mask.astype(np.uint8),
