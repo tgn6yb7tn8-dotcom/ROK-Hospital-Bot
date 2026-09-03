@@ -1612,376 +1612,893 @@ def lire_ressource(
 # ANALYSE DES RESSOURCES
 # =========================================================
 
-def _trouver_icones_ressources(
-    image
+
+def _classer_icon_ressource(
+    image,
+    x,
+    y,
+    largeur,
+    hauteur
 ):
     """
-    Détecte les icônes de ressources sur PC et téléphone.
+    Classe l'icône placée à gauche du montant OCR.
 
-    Signatures :
-    - food  : vert + jaune
-    - wood  : orange/brun
-    - stone : gros motif gris clair/bleuté
-    - gold  : jaune/orange sans vert
+    Important :
+    Le token OCR de la ressource peut inclure une partie de l'icône.
+    On analyse donc la partie gauche du bounding-box OCR au lieu de
+    chercher l'icône à une distance fixe.
 
-    Le but est de ne jamais supposer que 3 ressources signifie
-    automatiquement Wood/Stone/Gold : le jeu peut afficher
-    Food/Wood/Gold, par exemple.
+    Retour :
+        ("food" | "wood" | "stone" | "gold" | None, score)
     """
 
     h, w = image.shape[:2]
 
-    # La barre est toujours dans la partie droite et basse du panneau.
-    x1 = int(w * 0.40)
-    x2 = int(w * 0.99)
-    y1 = int(h * 0.72)
-    y2 = int(h * 0.90)
+    # La partie gauche du token contient généralement l'icône.
+    px1 = max(
+        0,
+        int(x)
+    )
 
-    roi = image[y1:y2, x1:x2]
+    px2 = min(
+        w,
+        int(
+            x
+            +
+            max(
+                18,
+                largeur * 0.45
+            )
+        )
+    )
 
-    if roi.size == 0:
-        return []
+    py1 = max(
+        0,
+        int(
+            y - max(
+                5,
+                hauteur * 0.15
+            )
+        )
+    )
+
+    py2 = min(
+        h,
+        int(
+            y
+            +
+            hauteur
+            +
+            max(
+                5,
+                hauteur * 0.15
+            )
+        )
+    )
+
+    patch = image[
+        py1:py2,
+        px1:px2
+    ]
+
+    if patch.size == 0:
+        return None, 0.0
 
     hsv = cv2.cvtColor(
-        roi,
+        patch,
         cv2.COLOR_BGR2HSV
     )
 
-    H, S, V = cv2.split(hsv)
+    H, S, V = cv2.split(
+        hsv
+    )
 
-    def components(
-        mask,
-        min_area,
-        max_area=600
+    # BGR pour détecter proprement les éléments gris.
+    B, G, R = cv2.split(
+        patch
+    )
+
+    green = int(
+        (
+            (H >= 35)
+            &
+            (H < 95)
+            &
+            (S > 90)
+            &
+            (V > 50)
+        ).sum()
+    )
+
+    orange = int(
+        (
+            (H < 25)
+            &
+            (S > 90)
+            &
+            (V > 50)
+        ).sum()
+    )
+
+    yellow = int(
+        (
+            (H >= 20)
+            &
+            (H < 48)
+            &
+            (S > 100)
+            &
+            (V > 70)
+        ).sum()
+    )
+
+    # Pixels vraiment gris/neutres.
+    grey = int(
+        (
+            (np.maximum.reduce(
+                [B, G, R]
+            )
+            -
+            np.minimum.reduce(
+                [B, G, R]
+            )
+            <
+            35)
+            &
+            (V > 100)
+        ).sum()
+    )
+
+    # Pierre peut aussi avoir une teinte bleue/grise.
+    blue_grey = int(
+        (
+            (H >= 85)
+            &
+            (H <= 135)
+            &
+            (S > 20)
+            &
+            (S < 150)
+            &
+            (V > 100)
+        ).sum()
+    )
+
+    total = max(
+        patch.shape[0] * patch.shape[1],
+        1
+    )
+
+    scores = {
+        "food":
+            green / total,
+
+        "wood":
+            orange / total,
+
+        "stone":
+            (
+                grey
+                +
+                blue_grey * 0.75
+            )
+            /
+            total,
+
+        "gold":
+            yellow / total
+    }
+
+    # ---------------------------------------------------------
+    # FOOD
+    # ---------------------------------------------------------
+    #
+    # Le maïs comporte une forte composante verte + jaune.
+    # Le vert permet de le distinguer de l'or.
+    if (
+        green >= 20
+        and
+        green >= orange * 1.35
+        and
+        green >= yellow * 0.70
     ):
-        count, labels, stats, centers = cv2.connectedComponentsWithStats(
-            mask.astype(np.uint8),
-            8
+        return (
+            "food",
+            scores["food"]
         )
 
-        result = []
-
-        for i in range(1, count):
-
-            area = int(
-                stats[i, cv2.CC_STAT_AREA]
-            )
-
-            if not (
-                min_area
-                <=
-                area
-                <=
-                max_area
-            ):
-                continue
-
-            width = int(
-                stats[i, cv2.CC_STAT_WIDTH]
-            )
-
-            height = int(
-                stats[i, cv2.CC_STAT_HEIGHT]
-            )
-
-            if width < 7 or height < 7:
-                continue
-
-            cx, cy = centers[i]
-
-            result.append(
-                {
-                    "x":
-                        float(cx + x1),
-
-                    "y":
-                        float(cy + y1),
-
-                    "area":
-                        area,
-
-                    "width":
-                        width,
-
-                    "height":
-                        height
-                }
-            )
-
-        return result
-
-    # Food leaves.
-    food_mask = (
-        (H >= 35)
-        &
-        (H < 90)
-        &
-        (S > 110)
-        &
-        (V > 55)
-    )
-
-    # Wood log.
-    wood_mask = (
-        (H < 25)
-        &
-        (S > 100)
-        &
-        (V > 55)
-    )
-
-    # Gold coin / food grain highlights.
-    yellow_mask = (
-        (H >= 20)
-        &
-        (H < 42)
-        &
-        (S > 100)
-        &
-        (V > 70)
-    )
-
-    # Stone is grey/light-blue, so saturation is lower.
-    stone_mask = (
-        (S < 120)
-        &
-        (V > 125)
-    )
-
-    foods = components(
-        food_mask,
-        25
-    )
-
-    woods = components(
-        wood_mask,
-        60
-    )
-
-    yellows = components(
-        yellow_mask,
-        45
-    )
-
-    stones = components(
-        stone_mask,
-        120
-    )
-
-    icons = []
-
-    def add_icon(
-        x,
-        y,
-        resource
+    # ---------------------------------------------------------
+    # WOOD
+    # ---------------------------------------------------------
+    #
+    # Le rondin est très fortement orange.
+    if (
+        orange >= 40
+        and
+        orange >= green * 1.5
+        and
+        orange >= yellow * 1.15
     ):
-        # Merge close detections belonging to the same icon.
-        for icon in icons:
+        return (
+            "wood",
+            scores["wood"]
+        )
+
+    # ---------------------------------------------------------
+    # GOLD
+    # ---------------------------------------------------------
+    #
+    # La pièce est jaune/orange, mais beaucoup moins orange pur
+    # qu'un rondin et quasiment sans vert.
+    if (
+        yellow >= 20
+        and
+        yellow >= green * 1.5
+        and
+        yellow >= orange * 0.75
+    ):
+        return (
+            "gold",
+            scores["gold"]
+        )
+
+    # ---------------------------------------------------------
+    # STONE
+    # ---------------------------------------------------------
+    if (
+        grey >= 30
+        and
+        grey + blue_grey >= green * 1.2
+        and
+        grey + blue_grey >= orange * 0.8
+    ):
+        return (
+            "stone",
+            scores["stone"]
+        )
+
+    return None, 0.0
+
+
+def _lire_ressources_avec_icones(
+    image
+):
+    """
+    Trouve la ligne des ressources par OCR puis identifie chaque
+    montant avec l'icône qui lui est associée.
+
+    Contrairement à l'ancienne logique, on ne suppose jamais que
+    3 montants signifient une combinaison précise.
+
+    Exemples acceptés :
+        Food / Wood / Gold
+        Wood / Stone / Gold
+        Food / Wood / Stone
+        Food / Wood / Stone / Gold
+    """
+
+    h, w = image.shape[:2]
+
+    # On élimine la barre de ressources globale du jeu située tout en haut.
+    crop_y1 = int(
+        h * 0.55
+    )
+
+    crop_y2 = int(
+        h * 0.94
+    )
+
+    crop = image[
+        crop_y1:crop_y2,
+        :
+    ]
+
+    if crop.size == 0:
+        return {
+            "nourriture":
+                None,
+
+            "bois":
+                None,
+
+            "pierre":
+                None,
+
+            "or":
+                None
+        }
+
+    candidats = []
+
+    # Plusieurs résolutions/PSM pour améliorer la détection du montant.
+    for scale in (
+        3,
+        4,
+        5,
+        6
+    ):
+
+        agrandi = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        variantes = [
+            agrandi,
+            cv2.cvtColor(
+                agrandi,
+                cv2.COLOR_BGR2GRAY
+            )
+        ]
+
+        for variante in variantes:
+
+            for psm in (
+                6,
+                11
+            ):
+
+                data = pytesseract.image_to_data(
+                    variante,
+                    config=(
+                        f"--psm {psm} "
+                        "-c tessedit_char_whitelist="
+                        "0123456789.KMB,"
+                    ),
+                    output_type=pytesseract.Output.DICT
+                )
+
+                for i, brut in enumerate(
+                    data["text"]
+                ):
+
+                    brut = brut.strip()
+
+                    if not brut:
+                        continue
+
+                    propre = (
+                        brut
+                        .upper()
+                        .replace(
+                            ",",
+                            "."
+                        )
+                        .replace(
+                            " ",
+                            ""
+                        )
+                    )
+
+                    # Montants autorisés :
+                    # 2.0K / 144 / 33.1M / 2B...
+                    if not re.fullmatch(
+                        r"\d+(?:\.\d+)?[KMB]?",
+                        propre
+                    ):
+                        continue
+
+                    valeur = convertir_ressource(
+                        propre
+                    )
+
+                    if valeur is None:
+                        continue
+
+                    x = (
+                        data["left"][i]
+                        /
+                        scale
+                    )
+
+                    y = (
+                        data["top"][i]
+                        /
+                        scale
+                        +
+                        crop_y1
+                    )
+
+                    largeur = (
+                        data["width"][i]
+                        /
+                        scale
+                    )
+
+                    hauteur = (
+                        data["height"][i]
+                        /
+                        scale
+                    )
+
+                    # Trop petits nombres du décor / boutons.
+                    if (
+                        largeur < 10
+                        or
+                        hauteur < 8
+                    ):
+                        continue
+
+                    resource, score = (
+                        _classer_icon_ressource(
+                            image,
+                            x,
+                            y,
+                            largeur,
+                            hauteur
+                        )
+                    )
+
+                    if resource is None:
+                        continue
+
+                    # Food/Wood/Stone should normally have K/M/B.
+                    # A bare number such as "2" is often an OCR fragment
+                    # of "2.0K". Gold is the exception (e.g. 137/144).
+                    if (
+                        not propre.endswith(
+                            (
+                                "K",
+                                "M",
+                                "B"
+                            )
+                        )
+                        and
+                        resource != "gold"
+                    ):
+                        continue
+
+                    candidats.append(
+                        {
+                            "resource":
+                                resource,
+
+                            "value":
+                                valeur,
+
+                            "x":
+                                x,
+
+                            "y":
+                                y,
+
+                            "score":
+                                score
+                        }
+                    )
+
+    if not candidats:
+        return {
+            "nourriture":
+                None,
+
+            "bois":
+                None,
+
+            "pierre":
+                None,
+
+            "or":
+                None
+        }
+
+    # Eliminate numbers from the left side of the hospital panel
+    # (wounded totals/capacities). The resource row is on the right.
+    candidats = [
+        candidat
+        for candidat in candidats
+        if candidat["x"] >= w * 0.45
+        and candidat["y"] >= h * 0.55
+        and candidat["y"] <= h * 0.92
+    ]
+
+    if not candidats:
+        return {
+            "nourriture":
+                None,
+
+            "bois":
+                None,
+
+            "pierre":
+                None,
+
+            "or":
+                None
+        }
+
+    # ---------------------------------------------------------
+    # Garder uniquement la vraie ligne de ressources.
+    #
+    # Il existe d'autres nombres dans le panneau (19/720 000,
+    # 0/50 000, timer, etc.). Les ressources sont regroupées sur
+    # une même ligne horizontale. On sélectionne donc le groupe
+    # de détections qui possède au moins 2 ressources et la meilleure
+    # qualité globale.
+    # ---------------------------------------------------------
+
+    groupes_y = []
+
+    for candidat in candidats:
+
+        centre_y = (
+            candidat["y"]
+            +
+            0.5
+        )
+
+        groupe_trouve = None
+
+        for groupe in groupes_y:
 
             if (
                 abs(
-                    icon["x"]
+                    centre_y
                     -
-                    x
+                    groupe["y"]
                 )
                 <=
-                22
-                and
-                abs(
-                    icon["y"]
-                    -
-                    y
-                )
-                <=
-                22
+                35
             ):
 
-                # Food is the most distinctive, then wood, stone, gold.
-                priority = {
-                    "food":
-                        4,
+                groupe["items"].append(
+                    candidat
+                )
 
-                    "wood":
-                        3,
+                groupe["y"] = (
+                    sum(
+                        item["y"]
+                        for item in groupe["items"]
+                    )
+                    /
+                    len(
+                        groupe["items"]
+                    )
+                )
 
-                    "stone":
-                        2,
+                groupe_trouve = groupe
 
-                    "gold":
-                        1
+                break
+
+        if groupe_trouve is None:
+
+            groupes_y.append(
+                {
+                    "y":
+                        candidat["y"],
+
+                    "items":
+                        [candidat]
                 }
+            )
+
+    # Pour chaque groupe, ne conserver qu'une lecture par ressource/x.
+    groupes_valides = []
+
+    for groupe in groupes_y:
+
+        # Déduplication spatiale.
+        uniques = []
+
+        for item in sorted(
+            groupe["items"],
+            key=lambda element:
+            element["x"]
+        ):
+
+            proche = False
+
+            for precedent in uniques:
 
                 if (
-                    priority[resource]
-                    >
-                    priority[icon["resource"]]
+                    abs(
+                        item["x"]
+                        -
+                        precedent["x"]
+                    )
+                    <=
+                    45
+                    and
+                    item["resource"]
+                    ==
+                    precedent["resource"]
                 ):
 
-                    icon["resource"] = resource
+                    proche = True
 
-                return
+                    if item["score"] > precedent["score"]:
+                        uniques.remove(precedent)
+                        uniques.append(item)
 
-        icons.append(
+                    break
+
+            if not proche:
+                uniques.append(item)
+
+        ressources_groupe = {
+            item["resource"]
+            for item in uniques
+        }
+
+        if len(
+            ressources_groupe
+        ) >= 2:
+
+            score_groupe = (
+                len(ressources_groupe)
+                * 100
+                +
+                sum(
+                    item["score"]
+                    for item in uniques
+                )
+            )
+
+            groupes_valides.append(
+                {
+                    "items":
+                        uniques,
+
+                    "score":
+                        score_groupe
+                }
+            )
+
+    if groupes_valides:
+
+        meilleur_groupe = max(
+            groupes_valides,
+            key=lambda groupe:
+            groupe["score"]
+        )
+
+        candidats = meilleur_groupe[
+            "items"
+        ]
+
+    # ---------------------------------------------------------
+    # Fusionner les morceaux OCR d'un même montant.
+    #
+    # Exemple téléphone :
+    #   2.0K
+    #
+    # Tesseract peut aussi produire :
+    #   2
+    #   0K
+    #
+    # Les deux détections ont presque le même X. On garde celle qui
+    # correspond le mieux au type d'icône. Cela évite de transformer
+    # un seul montant Wood en Wood + Stone.
+    # ---------------------------------------------------------
+
+    candidats = sorted(
+        candidats,
+        key=lambda item:
+        item["x"]
+    )
+
+    groupes_x = []
+
+    for candidat in candidats:
+
+        ajoute = False
+
+        for groupe in groupes_x:
+
+            if (
+                abs(
+                    candidat["x"]
+                    -
+                    groupe["x"]
+                )
+                <=
+                65
+            ):
+
+                groupe["items"].append(
+                    candidat
+                )
+
+                groupe["x"] = (
+                    sum(
+                        item["x"]
+                        for item in groupe["items"]
+                    )
+                    /
+                    len(
+                        groupe["items"]
+                    )
+                )
+
+                ajoute = True
+                break
+
+        if not ajoute:
+
+            groupes_x.append(
+                {
+                    "x":
+                        candidat["x"],
+
+                    "items":
+                        [candidat]
+                }
+            )
+
+    candidats_nettoyes = []
+
+    for groupe in groupes_x:
+
+        # Voter d'abord pour le type d'icône.
+        par_type = {}
+
+        for item in groupe["items"]:
+
+            resource = item["resource"]
+
+            par_type.setdefault(
+                resource,
+                []
+            ).append(
+                item
+            )
+
+        resource, items = max(
+            par_type.items(),
+            key=lambda element: (
+                len(
+                    element[1]
+                ),
+                sum(
+                    item["score"]
+                    for item in element[1]
+                )
+            )
+        )
+
+        # Puis voter pour la valeur OCR.
+        valeurs = {}
+
+        for item in items:
+
+            valeur = item["value"]
+
+            valeurs.setdefault(
+                valeur,
+                {
+                    "votes":
+                        0,
+
+                    "score":
+                        0.0
+                }
+            )
+
+            valeurs[
+                valeur
+            ]["votes"] += 1
+
+            valeurs[
+                valeur
+            ]["score"] += item["score"]
+
+        valeur, _ = max(
+            valeurs.items(),
+            key=lambda element: (
+                element[1]["votes"],
+                element[1]["score"]
+            )
+        )
+
+        candidats_nettoyes.append(
             {
-                "x":
-                    x,
-
-                "y":
-                    y,
-
                 "resource":
-                    resource
+                    resource,
+
+                "value":
+                    valeur,
+
+                "x":
+                    groupe["x"],
+
+                "score":
+                    sum(
+                        item["score"]
+                        for item in items
+                    )
             }
         )
 
-    # Food: green is unique enough that it can be used directly.
-    for item in foods:
+    candidats = candidats_nettoyes
 
-        add_icon(
-            item["x"],
-            item["y"],
-            "food"
+    # ---------------------------------------------------------
+    # Regrouper les lectures restantes et voter par ressource.
+    # ---------------------------------------------------------
+
+    par_ressource = {
+        "food": [],
+        "wood": [],
+        "stone": [],
+        "gold": []
+    }
+
+    for candidat in candidats:
+
+        par_ressource[
+            candidat["resource"]
+        ].append(
+            candidat
         )
 
-    # Gold: yellow not associated with food.
-    for item in yellows:
+    resultats = {}
 
-        near_food = any(
-            icon["resource"] == "food"
-            and
-            abs(
-                icon["x"]
-                -
-                item["x"]
-            )
-            <=
-            24
-            and
-            abs(
-                icon["y"]
-                -
-                item["y"]
-            )
-            <=
-            24
-            for icon in icons
-        )
+    for resource, items in par_ressource.items():
 
-        if not near_food:
+        if not items:
 
-            add_icon(
-                item["x"],
-                item["y"],
-                "gold"
-            )
-
-    # Wood: orange not already part of a gold coin.
-    for item in woods:
-
-        near_gold = any(
-            icon["resource"] == "gold"
-            and
-            abs(
-                icon["x"]
-                -
-                item["x"]
-            )
-            <=
-            24
-            and
-            abs(
-                icon["y"]
-                -
-                item["y"]
-            )
-            <=
-            24
-            for icon in icons
-        )
-
-        if not near_gold:
-
-            add_icon(
-                item["x"],
-                item["y"],
-                "wood"
-            )
-
-    # Stone: keep only reasonably compact large grey blobs.
-    for item in stones:
-
-        if (
-            item["width"] >= 10
-            and
-            item["height"] >= 10
-        ):
-
-            add_icon(
-                item["x"],
-                item["y"],
-                "stone"
-            )
-
-    # A few OCR/background components may still survive; keep icons
-    # ordered and merge very close duplicates.
-    icons.sort(
-        key=lambda icon:
-        icon["x"]
-    )
-
-    cleaned = []
-
-    for icon in icons:
-
-        if not cleaned:
-
-            cleaned.append(
-                icon
-            )
+            resultats[
+                resource
+            ] = None
 
             continue
 
-        previous = cleaned[-1]
+        votes = {}
 
-        if (
-            abs(
-                icon["x"]
-                -
-                previous["x"]
-            )
-            <=
-            30
-        ):
+        for item in items:
 
-            priority = {
-                "food":
-                    4,
-
-                "wood":
-                    3,
-
-                "stone":
-                    2,
-
-                "gold":
-                    1
-            }
-
-            if (
-                priority[icon["resource"]]
-                >
-                priority[previous["resource"]]
-            ):
-
-                cleaned[-1] = icon
-
-        else:
-
-            cleaned.append(
-                icon
+            cle = (
+                item["value"]
             )
 
-    return cleaned
+            if cle not in votes:
+
+                votes[cle] = {
+                    "count":
+                        0,
+
+                    "score":
+                        0.0
+                }
+
+            votes[cle]["count"] += 1
+
+            votes[cle]["score"] += (
+                item["score"]
+            )
+
+        meilleur = max(
+            votes.items(),
+            key=lambda item: (
+                item[1]["count"],
+                item[1]["score"]
+            )
+        )
+
+        resultats[
+            resource
+        ] = (
+            meilleur[0]
+            if meilleur[0] > 0
+            else None
+        )
+
+    return {
+        "nourriture":
+            resultats["food"],
+
+        "bois":
+            resultats["wood"],
+
+        "pierre":
+            resultats["stone"],
+
+        "or":
+            resultats["gold"]
+    }
+
 
 
 def analyser_ressources(
