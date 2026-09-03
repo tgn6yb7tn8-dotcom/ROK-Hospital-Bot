@@ -712,10 +712,16 @@ def commande_dans_bon_salon():
         ctx,
     ):
 
-        if ctx.channel.id != COMMANDS_CHANNEL_ID:
+        salons_autorises = {
+            VERIFICATION_CHANNEL_ID,
+            RESULT_CHANNEL_ID,
+        }
+
+        if ctx.channel.id not in salons_autorises:
 
             raise commands.CheckFailure(
                 "Cette commande doit être utilisée "
+                "dans le salon de vérification ou "
                 "dans le salon des résultats."
             )
 
