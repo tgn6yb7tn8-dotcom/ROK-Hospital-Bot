@@ -1476,180 +1476,404 @@ async def on_message(
     ):
         return
 
-        print()
-        print(
-            "========================================"
-        )
+    print()
+    print(
+        "========================================"
+    )
+
+    print(
+        "NOUVEAU MESSAGE DE VERIFICATION"
+    )
+
+    print(
+        f"Auteur : {message.author}"
+    )
+
+    print(
+        f"ID     : {message.content.strip()}"
+    )
+
+    print(
+        f"Images : {len(message.attachments)}"
+    )
+
+    print(
+        "========================================"
+    )
+
+    result_channel = (
+        await obtenir_salon_resultats()
+    )
+
+    if result_channel is None:
 
         print(
-            "NOUVEAU MESSAGE DE VERIFICATION"
+            "❌ Salon de résultats introuvable."
         )
 
-        print(
-            f"Auteur : {message.author}"
+        return
+
+    # -------------------------------------------------
+    # VERIFICATION DES CAPTURES
+    # -------------------------------------------------
+
+    attachments_images = []
+
+    for attachment in message.attachments:
+
+        extension = os.path.splitext(
+            attachment.filename.lower()
+        )[1]
+
+        if extension in IMAGE_EXTENSIONS:
+
+            attachments_images.append(
+                attachment
+            )
+
+    if not attachments_images:
+
+        await result_channel.send(
+            "❌ **Verification failed**\n"
+            f"👤 **Player ID:** "
+            f"`{message.content.strip() or 'Unknown'}`\n"
+            "No valid screenshot was attached."
         )
 
-        print(
-            f"ID     : {message.content.strip()}"
+        await envoyer_dm_erreur(
+            message.author,
+            "Verification error",
+            (
+                "Your verification could not be processed "
+                "because no valid screenshot was attached. "
+                "Please send 1 or 2 hospital screenshots."
+            ),
         )
 
-        print(
-            f"Images : {len(message.attachments)}"
+        return
+
+    if len(attachments_images) > MAX_IMAGES:
+
+        await result_channel.send(
+            "❌ **Verification failed**\n"
+            f"👤 **Player ID:** "
+            f"`{message.content.strip() or 'Unknown'}`\n"
+            f"Maximum allowed screenshots: "
+            f"**{MAX_IMAGES}**."
         )
 
-        print(
-            "========================================"
+        await envoyer_dm_erreur(
+            message.author,
+            "Verification error",
+            (
+                f"You sent too many screenshots. "
+                f"Only {MAX_IMAGES} screenshots are allowed."
+            ),
         )
 
-        result_channel = (
-            await obtenir_salon_resultats()
+        return
+
+    # -------------------------------------------------
+    # PLAYER ID
+    # -------------------------------------------------
+
+    player_id = message.content.strip()
+
+    if not player_id.isdigit():
+
+        await result_channel.send(
+            "❌ **Verification failed**\n"
+            f"👤 **Player ID:** "
+            f"`{player_id or 'Unknown'}`\n"
+            "The message must contain the numeric "
+            "Player ID only."
         )
 
-        if result_channel is None:
+        await envoyer_dm_erreur(
+            message.author,
+            "Invalid Player ID",
+            (
+                "The Player ID must contain numbers only. "
+                "Please check that you entered it correctly."
+            ),
+        )
+
+        return
+
+    if len(player_id) != 9:
+
+        await result_channel.send(
+            "❌ **Verification failed**\n"
+            f"👤 **Player ID:** "
+            f"`{player_id}`\n"
+            "A valid Player ID must contain exactly "
+            "**9 digits**."
+        )
+
+        await envoyer_dm_erreur(
+            message.author,
+            "Invalid Player ID",
+            (
+                f"Your Player ID has **{len(player_id)} digits**, "
+                "but a valid Player ID must contain exactly "
+                "**9 digits**. Please check for a missing "
+                "or extra digit and send it again."
+            ),
+        )
+
+        return
+
+    # -------------------------------------------------
+    # ANTI-DOUBLON + TRAITEMENT COMPLET
+    # -------------------------------------------------
+    #
+    # Le verrou empêche deux personnes de soumettre le
+    # même ID en même temps.
+    #
+    # L'ID n'est réservé que lorsque la vérification a
+    # réellement été écrite dans Google Sheets.
+    #
+    # Un ID déjà présent dans "hopital" est refusé.
+    # Après suppression de toutes ses lignes avec !delete,
+    # il redevient disponible.
+
+    async with verification_lock:
+
+        try:
+
+            deja_present = await asyncio.to_thread(
+                player_id_existe_google,
+                player_id,
+            )
+
+        except Exception as e:
 
             print(
-                "❌ Salon de résultats introuvable."
+                "❌ ERREUR VERIFICATION DOUBLON"
+            )
+
+            print(
+                repr(e)
+            )
+
+            await result_channel.send(
+                "❌ **Verification error**\n\n"
+                f"👤 **Player ID:** "
+                f"{player_id}\n\n"
+                "The bot could not check whether "
+                "this Player ID already exists "
+                "in Google Sheets."
+            )
+
+            await envoyer_dm_erreur(
+                message.author,
+                "Verification error",
+                (
+                    "The bot could not check whether your "
+                    "Player ID already exists in Google Sheets. "
+                    "Please try again later."
+                ),
+            )
+
+            return
+
+        if deja_present:
+
+            await result_channel.send(
+                "⚠️ **Player ID already verified**\n\n"
+                f"👤 **Player ID:** "
+                f"{player_id}\n\n"
+                "This Player ID already exists in "
+                "the `hopital` sheet.\n"
+                "The new verification was ignored."
+            )
+
+            await envoyer_dm_erreur(
+                message.author,
+                "Player ID already verified",
+                (
+                    f"Player ID {player_id} has already been "
+                    "verified and is already present in the "
+                    "`hopital` sheet. Your new verification "
+                    "was ignored."
+                ),
             )
 
             return
 
         # -------------------------------------------------
-        # VERIFICATION DES CAPTURES
+        # DOSSIER TEMPORAIRE
         # -------------------------------------------------
 
-        attachments_images = []
+        dossier_temporaire = tempfile.mkdtemp(
+            prefix="rok_hospital_"
+        )
 
-        for attachment in message.attachments:
+        fichiers_temporaires = []
 
-            extension = os.path.splitext(
-                attachment.filename.lower()
-            )[1]
+        try:
 
-            if extension in IMAGE_EXTENSIONS:
+            # -------------------------------------------------
+            # TELECHARGEMENT DES CAPTURES
+            # -------------------------------------------------
 
-                attachments_images.append(
-                    attachment
+            for index, attachment in enumerate(
+                attachments_images,
+                start=1,
+            ):
+
+                extension = os.path.splitext(
+                    attachment.filename
+                )[1].lower()
+
+                if not extension:
+
+                    extension = ".png"
+
+                chemin = os.path.join(
+                    dossier_temporaire,
+                    f"screenshot_{index}{extension}",
                 )
 
-        if not attachments_images:
+                await attachment.save(
+                    chemin
+                )
 
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{message.content.strip() or 'Unknown'}`\n"
-                "No valid screenshot was attached."
+                fichiers_temporaires.append(
+                    chemin
+                )
+
+                print(
+                    f"Capture {index} téléchargée -> "
+                    f"{chemin}"
+                )
+
+            # -------------------------------------------------
+            # ANALYSE OCR
+            # -------------------------------------------------
+
+            print(
+                "Analyse en cours..."
             )
 
-            await envoyer_dm_erreur(
-                message.author,
-                "Verification error",
-                (
-                    "Your verification could not be processed "
-                    "because no valid screenshot was attached. "
-                    "Please send 1 or 2 hospital screenshots."
-                ),
+            resultat = await asyncio.to_thread(
+                analyser_plusieurs_images,
+                fichiers_temporaires,
             )
 
-            return
-
-        if len(attachments_images) > MAX_IMAGES:
-
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{message.content.strip() or 'Unknown'}`\n"
-                f"Maximum allowed screenshots: "
-                f"**{MAX_IMAGES}**."
+            print(
+                "Analyse terminée."
             )
 
-            await envoyer_dm_erreur(
-                message.author,
-                "Verification error",
-                (
-                    f"You sent too many screenshots. "
-                    f"Only {MAX_IMAGES} screenshots are allowed."
-                ),
+            print(
+                resultat
             )
 
-            return
-
-        # -------------------------------------------------
-        # PLAYER ID
-        # -------------------------------------------------
-
-        player_id = message.content.strip()
-
-        if not player_id.isdigit():
-
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{player_id or 'Unknown'}`\n"
-                "The message must contain the numeric "
-                "Player ID only."
+            t4 = resultat.get(
+                "t4"
             )
 
-            await envoyer_dm_erreur(
-                message.author,
-                "Invalid Player ID",
-                (
-                    "The Player ID must contain numbers only. "
-                    "Please check that you entered it correctly."
-                ),
+            t5 = resultat.get(
+                "t5"
             )
 
-            return
-
-        if len(player_id) != 9:
-
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{player_id}`\n"
-                "A valid Player ID must contain exactly "
-                "**9 digits**."
+            total = resultat.get(
+                "total"
             )
 
-            await envoyer_dm_erreur(
-                message.author,
-                "Invalid Player ID",
-                (
-                    f"Your Player ID has **{len(player_id)} digits**, "
-                    "but a valid Player ID must contain exactly "
-                    "**9 digits**. Please check for a missing "
-                    "or extra digit and send it again."
-                ),
+            nourriture = resultat.get(
+                "nourriture"
             )
 
-            return
+            bois = resultat.get(
+                "bois"
+            )
 
-        # -------------------------------------------------
-        # ANTI-DOUBLON + TRAITEMENT COMPLET
-        # -------------------------------------------------
-        #
-        # Le verrou empêche deux personnes de soumettre le
-        # même ID en même temps.
-        #
-        # L'ID n'est réservé que lorsque la vérification a
-        # réellement été écrite dans Google Sheets.
-        #
-        # Un ID déjà présent dans "hopital" est refusé.
-        # Après suppression de toutes ses lignes avec !delete,
-        # il redevient disponible.
+            pierre = resultat.get(
+                "pierre"
+            )
 
-        async with verification_lock:
+            or_ = resultat.get(
+                "or"
+            )
+
+            # -------------------------------------------------
+            # VALIDATION
+            # -------------------------------------------------
+
+            analyse_valide = (
+                t4 is not None
+                and t5 is not None
+                and total is not None
+                and t4 + t5 == total
+            )
+
+            fichiers_discord = (
+                await envoyer_images_resultat(
+                    fichiers_temporaires
+                )
+            )
+
+            if not analyse_valide:
+
+                await result_channel.send(
+                    content=(
+                        "❌ **Verification failed**\n\n"
+                        f"👤 **Player ID:** "
+                        f"{player_id}\n\n"
+                        "The screenshots could not be "
+                        "analyzed correctly.\n"
+                        "The original screenshots are "
+                        "attached below for manual review."
+                    ),
+                    files=fichiers_discord,
+                )
+
+                await envoyer_dm_erreur(
+                    message.author,
+                    "Verification error",
+                    (
+                        "Your hospital screenshots could not "
+                        "be analyzed correctly. Please check "
+                        "the screenshots and send them again."
+                    ),
+                )
+
+
+                print(
+                    "❌ Analyse invalide : "
+                    "message source conservé."
+                )
+
+                return
+
+            # -------------------------------------------------
+            # GOOGLE SHEETS
+            # -------------------------------------------------
 
             try:
 
-                deja_present = await asyncio.to_thread(
-                    player_id_existe_google,
+                print(
+                    "Ajout de la vérification "
+                    "dans Google Sheets..."
+                )
+
+                await asyncio.to_thread(
+                    ajouter_verification_google,
                     player_id,
+                    t4,
+                    t5,
+                    total,
+                    nourriture,
+                    bois,
+                    pierre,
+                    or_,
                 )
 
             except Exception as e:
 
                 print(
-                    "❌ ERREUR VERIFICATION DOUBLON"
+                    "❌ ERREUR GOOGLE SHEETS"
                 )
 
                 print(
@@ -1657,156 +1881,113 @@ async def on_message(
                 )
 
                 await result_channel.send(
-                    "❌ **Verification error**\n\n"
-                    f"👤 **Player ID:** "
-                    f"{player_id}\n\n"
-                    "The bot could not check whether "
-                    "this Player ID already exists "
-                    "in Google Sheets."
+                    content=(
+                        "❌ **Verification error**\n\n"
+                        f"👤 **Player ID:** "
+                        f"{player_id}\n\n"
+                        "The verification was analyzed "
+                        "correctly, but the result could "
+                        "not be saved to Google Sheets.\n"
+                        "The original screenshots are "
+                        "attached below."
+                    ),
+                    files=fichiers_discord,
                 )
 
                 await envoyer_dm_erreur(
                     message.author,
-                    "Verification error",
+                    "Saving error",
                     (
-                        "The bot could not check whether your "
-                        "Player ID already exists in Google Sheets. "
-                        "Please try again later."
+                        "Your hospital verification was analyzed "
+                        "correctly, but the result could not be "
+                        "saved to Google Sheets. Please try again "
+                        "later."
                     ),
                 )
 
-                return
-
-            if deja_present:
-
-                await result_channel.send(
-                    "⚠️ **Player ID already verified**\n\n"
-                    f"👤 **Player ID:** "
-                    f"{player_id}\n\n"
-                    "This Player ID already exists in "
-                    "the `hopital` sheet.\n"
-                    "The new verification was ignored."
-                )
-
-                await envoyer_dm_erreur(
-                    message.author,
-                    "Player ID already verified",
-                    (
-                        f"Player ID {player_id} has already been "
-                        "verified and is already present in the "
-                        "`hopital` sheet. Your new verification "
-                        "was ignored."
-                    ),
-                )
 
                 return
 
             # -------------------------------------------------
-            # DOSSIER TEMPORAIRE
+            # RESULTAT
             # -------------------------------------------------
 
-            dossier_temporaire = tempfile.mkdtemp(
-                prefix="rok_hospital_"
+            lignes_resultat = [
+
+                "✅ **Verification completed**",
+
+                "",
+
+                f"👤 **Player ID:** {player_id}",
+
+                "",
+
+                f"🟪 **T4:** {t4:,}",
+
+                f"🟧 **T5:** {t5:,}",
+
+                f"⚔️ **Total troops:** {total:,}",
+
+                "",
+
+                (
+                    f"🌾 **Food:** {nourriture:,}"
+                    if nourriture is not None
+                    else
+                    "🌾 **Food:**"
+                ),
+
+                (
+                    f"🪵 **Wood:** {bois:,}"
+                    if bois is not None
+                    else
+                    "🪵 **Wood:**"
+                ),
+
+                (
+                    f"🪨 **Stone:** {pierre:,}"
+                    if pierre is not None
+                    else
+                    "🪨 **Stone:**"
+                ),
+
+                (
+                    f"🪙 **Gold:** {or_:,}"
+                    if or_ is not None
+                    else
+                    "🪙 **Gold:**"
+                ),
+            ]
+
+            message_resultat = "\n".join(
+                lignes_resultat
             )
 
-            fichiers_temporaires = []
+            await result_channel.send(
+                content=message_resultat,
+                files=fichiers_discord,
+            )
+
+            print(
+                "✅ Vérification envoyée "
+                "dans le salon de résultats."
+            )
+
+            # -------------------------------------------------
+            # SUPPRESSION DU MESSAGE SOURCE
+            # -------------------------------------------------
+
+        except Exception as e:
+
+            print(
+                "❌ ERREUR PENDANT LA VERIFICATION"
+            )
+
+            print(
+                repr(e)
+            )
 
             try:
-
-                # -------------------------------------------------
-                # TELECHARGEMENT DES CAPTURES
-                # -------------------------------------------------
-
-                for index, attachment in enumerate(
-                    attachments_images,
-                    start=1,
-                ):
-
-                    extension = os.path.splitext(
-                        attachment.filename
-                    )[1].lower()
-
-                    if not extension:
-
-                        extension = ".png"
-
-                    chemin = os.path.join(
-                        dossier_temporaire,
-                        f"screenshot_{index}{extension}",
-                    )
-
-                    await attachment.save(
-                        chemin
-                    )
-
-                    fichiers_temporaires.append(
-                        chemin
-                    )
-
-                    print(
-                        f"Capture {index} téléchargée -> "
-                        f"{chemin}"
-                    )
-
-                # -------------------------------------------------
-                # ANALYSE OCR
-                # -------------------------------------------------
-
-                print(
-                    "Analyse en cours..."
-                )
-
-                resultat = await asyncio.to_thread(
-                    analyser_plusieurs_images,
-                    fichiers_temporaires,
-                )
-
-                print(
-                    "Analyse terminée."
-                )
-
-                print(
-                    resultat
-                )
-
-                t4 = resultat.get(
-                    "t4"
-                )
-
-                t5 = resultat.get(
-                    "t5"
-                )
-
-                total = resultat.get(
-                    "total"
-                )
-
-                nourriture = resultat.get(
-                    "nourriture"
-                )
-
-                bois = resultat.get(
-                    "bois"
-                )
-
-                pierre = resultat.get(
-                    "pierre"
-                )
-
-                or_ = resultat.get(
-                    "or"
-                )
-
-                # -------------------------------------------------
-                # VALIDATION
-                # -------------------------------------------------
-
-                analyse_valide = (
-                    t4 is not None
-                    and t5 is not None
-                    and total is not None
-                    and t4 + t5 == total
-                )
 
                 fichiers_discord = (
                     await envoyer_images_resultat(
@@ -1814,240 +1995,59 @@ async def on_message(
                     )
                 )
 
-                if not analyse_valide:
-
-                    await result_channel.send(
-                        content=(
-                            "❌ **Verification failed**\n\n"
-                            f"👤 **Player ID:** "
-                            f"{player_id}\n\n"
-                            "The screenshots could not be "
-                            "analyzed correctly.\n"
-                            "The original screenshots are "
-                            "attached below for manual review."
-                        ),
-                        files=fichiers_discord,
-                    )
-
-                    await envoyer_dm_erreur(
-                        message.author,
-                        "Verification error",
-                        (
-                            "Your hospital screenshots could not "
-                            "be analyzed correctly. Please check "
-                            "the screenshots and send them again."
-                        ),
-                    )
-
-
-                    print(
-                        "❌ Analyse invalide : "
-                        "message source conservé."
-                    )
-
-                    return
-
-                # -------------------------------------------------
-                # GOOGLE SHEETS
-                # -------------------------------------------------
-
-                try:
-
-                    print(
-                        "Ajout de la vérification "
-                        "dans Google Sheets..."
-                    )
-
-                    await asyncio.to_thread(
-                        ajouter_verification_google,
-                        player_id,
-                        t4,
-                        t5,
-                        total,
-                        nourriture,
-                        bois,
-                        pierre,
-                        or_,
-                    )
-
-                except Exception as e:
-
-                    print(
-                        "❌ ERREUR GOOGLE SHEETS"
-                    )
-
-                    print(
-                        repr(e)
-                    )
-
-                    await result_channel.send(
-                        content=(
-                            "❌ **Verification error**\n\n"
-                            f"👤 **Player ID:** "
-                            f"{player_id}\n\n"
-                            "The verification was analyzed "
-                            "correctly, but the result could "
-                            "not be saved to Google Sheets.\n"
-                            "The original screenshots are "
-                            "attached below."
-                        ),
-                        files=fichiers_discord,
-                    )
-
-                    await envoyer_dm_erreur(
-                        message.author,
-                        "Saving error",
-                        (
-                            "Your hospital verification was analyzed "
-                            "correctly, but the result could not be "
-                            "saved to Google Sheets. Please try again "
-                            "later."
-                        ),
-                    )
-
-
-                    return
-
-                # -------------------------------------------------
-                # RESULTAT
-                # -------------------------------------------------
-
-                lignes_resultat = [
-
-                    "✅ **Verification completed**",
-
-                    "",
-
-                    f"👤 **Player ID:** {player_id}",
-
-                    "",
-
-                    f"🟪 **T4:** {t4:,}",
-
-                    f"🟧 **T5:** {t5:,}",
-
-                    f"⚔️ **Total troops:** {total:,}",
-
-                    "",
-
-                    (
-                        f"🌾 **Food:** {nourriture:,}"
-                        if nourriture is not None
-                        else
-                        "🌾 **Food:**"
-                    ),
-
-                    (
-                        f"🪵 **Wood:** {bois:,}"
-                        if bois is not None
-                        else
-                        "🪵 **Wood:**"
-                    ),
-
-                    (
-                        f"🪨 **Stone:** {pierre:,}"
-                        if pierre is not None
-                        else
-                        "🪨 **Stone:**"
-                    ),
-
-                    (
-                        f"🪙 **Gold:** {or_:,}"
-                        if or_ is not None
-                        else
-                        "🪙 **Gold:**"
-                    ),
-                ]
-
-                message_resultat = "\n".join(
-                    lignes_resultat
-                )
-
                 await result_channel.send(
-                    content=message_resultat,
+                    content=(
+                        "❌ **Verification error**\n\n"
+                        f"👤 **Player ID:** "
+                        f"{player_id}\n\n"
+                        "An unexpected error occurred "
+                        "while analyzing the screenshots.\n"
+                        "The original screenshots are "
+                        "attached below for manual review."
+                    ),
                     files=fichiers_discord,
                 )
 
-                print(
-                    "✅ Vérification envoyée "
-                    "dans le salon de résultats."
+                await envoyer_dm_erreur(
+                    message.author,
+                    "Verification error",
+                    (
+                        "An unexpected error occurred while "
+                        "analyzing your hospital screenshots. "
+                        "Please try sending them again."
+                    ),
                 )
 
-                # -------------------------------------------------
-                # SUPPRESSION DU MESSAGE SOURCE
-                # -------------------------------------------------
+
+            except Exception as send_error:
+
+                print(
+                    "❌ Impossible d'envoyer "
+                    "le rapport d'erreur : "
+                    f"{send_error}"
+                )
+
+        finally:
+
+            try:
+
+                shutil.rmtree(
+                    dossier_temporaire,
+                    ignore_errors=True,
+                )
+
+                print(
+                    "🧹 Fichiers temporaires supprimés."
+                )
 
             except Exception as e:
 
                 print(
-                    "❌ ERREUR PENDANT LA VERIFICATION"
+                    "⚠️ Erreur nettoyage temporaire : "
+                    f"{e}"
                 )
 
-                print(
-                    repr(e)
-                )
-
-                try:
-
-                    fichiers_discord = (
-                        await envoyer_images_resultat(
-                            fichiers_temporaires
-                        )
-                    )
-
-                    await result_channel.send(
-                        content=(
-                            "❌ **Verification error**\n\n"
-                            f"👤 **Player ID:** "
-                            f"{player_id}\n\n"
-                            "An unexpected error occurred "
-                            "while analyzing the screenshots.\n"
-                            "The original screenshots are "
-                            "attached below for manual review."
-                        ),
-                        files=fichiers_discord,
-                    )
-
-                    await envoyer_dm_erreur(
-                        message.author,
-                        "Verification error",
-                        (
-                            "An unexpected error occurred while "
-                            "analyzing your hospital screenshots. "
-                            "Please try sending them again."
-                        ),
-                    )
-
-
-                except Exception as send_error:
-
-                    print(
-                        "❌ Impossible d'envoyer "
-                        "le rapport d'erreur : "
-                        f"{send_error}"
-                    )
-
-            finally:
-
-                try:
-
-                    shutil.rmtree(
-                        dossier_temporaire,
-                        ignore_errors=True,
-                    )
-
-                    print(
-                        "🧹 Fichiers temporaires supprimés."
-                    )
-
-                except Exception as e:
-
-                    print(
-                        "⚠️ Erreur nettoyage temporaire : "
-                        f"{e}"
-                    )
-
-        return
+    return
 
     # -----------------------------------------------------
     # AUTRES SALONS -> TRAITEMENT DES COMMANDES
