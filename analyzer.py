@@ -5,11 +5,47 @@ import re
 import sys
 import unicodedata
 from collections import Counter
+from PIL import Image, ImageOps
 
 
 # =========================================================
 # CONFIGURATION
 # =========================================================
+
+# =========================================================
+# VARIANTES OCR
+# =========================================================
+
+def _variants(
+    image: Image.Image
+) -> list[Image.Image]:
+    """
+    Génère les variantes utilisées par Tesseract :
+    - autocontraste en niveaux de gris ;
+    - inversion noir/blanc ;
+    - agrandissement x2 pour les petites captures.
+    """
+
+    base = ImageOps.autocontrast(
+        image.convert("L")
+    )
+
+    if max(base.size) < 1600:
+
+        base = base.resize(
+            (
+                base.width * 2,
+                base.height * 2
+            ),
+            Image.LANCZOS
+        )
+
+    return [
+        base,
+        ImageOps.invert(base)
+    ]
+
+
 
 # Tesseract :
 # - Railway/Linux : utilise automatiquement le binaire installé dans PATH
@@ -452,10 +488,13 @@ def detecter_lignes(
 def ocr_panneau_troupes(
     image
 ):
+    """
+    OCR du panneau des troupes avec les variantes _variants().
+    Les coordonnées sont reconverties dans l'image source.
+    """
 
     h, w = image.shape[:2]
 
-    # Zone contenant les noms et quantités
     x1 = int(
         w * 0.39
     )
@@ -477,93 +516,111 @@ def ocr_panneau_troupes(
         x1:x2
     ]
 
-    crop = cv2.resize(
-        crop,
-        None,
-        fx=3,
-        fy=3,
-        interpolation=cv2.INTER_CUBIC
-    )
+    if crop.size == 0:
+        return []
 
-    data = pytesseract.image_to_data(
-        crop,
-        config="--psm 6",
-        output_type=pytesseract.Output.DICT
+    pil_crop = Image.fromarray(
+        cv2.cvtColor(
+            crop,
+            cv2.COLOR_BGR2RGB
+        )
     )
 
     mots = []
 
-    for i, texte in enumerate(
-        data["text"]
+    for variante in _variants(
+        pil_crop
     ):
 
-        texte = texte.strip()
+        scale_x = (
+            variante.width
+            /
+            pil_crop.width
+        )
 
-        if not texte:
+        scale_y = (
+            variante.height
+            /
+            pil_crop.height
+        )
 
-            continue
+        data = pytesseract.image_to_data(
+            variante,
+            config="--psm 6",
+            output_type=pytesseract.Output.DICT
+        )
 
-        try:
+        for i, texte in enumerate(
+            data["text"]
+        ):
 
-            confiance = float(
-                data["conf"][i]
+            texte = texte.strip()
+
+            if not texte:
+                continue
+
+            try:
+                confiance = float(
+                    data["conf"][i]
+                )
+            except (
+                ValueError,
+                TypeError
+            ):
+                confiance = 0
+
+            left = (
+                data["left"][i]
+                /
+                scale_x
+                +
+                x1
             )
 
-        except ValueError:
+            top = (
+                data["top"][i]
+                /
+                scale_y
+                +
+                y1
+            )
 
-            confiance = 0
+            largeur = (
+                data["width"][i]
+                /
+                scale_x
+            )
 
-        left = (
-            data["left"][i]
-            /
-            3
-            +
-            x1
-        )
+            hauteur = (
+                data["height"][i]
+                /
+                scale_y
+            )
 
-        top = (
-            data["top"][i]
-            /
-            3
-            +
-            y1
-        )
+            centre_y = (
+                top
+                +
+                hauteur / 2
+            )
 
-        largeur = (
-            data["width"][i]
-            /
-            3
-        )
+            mots.append(
+                {
+                    "texte":
+                        texte,
 
-        hauteur = (
-            data["height"][i]
-            /
-            3
-        )
+                    "x":
+                        left,
 
-        centre_y = (
-            top
-            +
-            hauteur / 2
-        )
+                    "y":
+                        centre_y,
 
-        mots.append(
-            {
-                "texte":
-                    texte,
-
-                "x":
-                    left,
-
-                "y":
-                    centre_y,
-
-                "confiance":
-                    confiance
-            }
-        )
+                    "confiance":
+                        confiance
+                }
+            )
 
     return mots
+
 
 
 # =========================================================
@@ -1532,7 +1589,8 @@ def lire_ressource(
     y2
 ):
     """
-    Fonction conservée pour compatibilité.
+    Lit une ressource dans une zone donnée en utilisant les variantes
+    autocontrast/invert, puis garde l'ancien traitement OpenCV en secours.
     """
 
     crop = preparer_crop(
@@ -1547,12 +1605,42 @@ def lire_ressource(
     if crop is None:
         return None
 
+    valeurs = []
+
+    pil_crop = Image.fromarray(
+        cv2.cvtColor(
+            crop,
+            cv2.COLOR_BGR2RGB
+        )
+    )
+
+    for variante in _variants(
+        pil_crop
+    ):
+
+        texte = pytesseract.image_to_string(
+            variante,
+            config=(
+                "--psm 7 "
+                "-c tessedit_char_whitelist="
+                "0123456789.KMB"
+            )
+        )
+
+        valeur = convertir_ressource(
+            texte
+        )
+
+        if valeur is not None:
+            valeurs.append(
+                valeur
+            )
+
+    # Fallback existant.
     gray = cv2.cvtColor(
         crop,
         cv2.COLOR_BGR2GRAY
     )
-
-    valeurs = []
 
     essais = [
         gray
@@ -1606,6 +1694,7 @@ def lire_ressource(
     return compteur.most_common(
         1
     )[0][0]
+
 
 
 # =========================================================
