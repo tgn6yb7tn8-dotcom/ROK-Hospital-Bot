@@ -1367,6 +1367,28 @@ async def on_message(
     if message.author.bot:
         return
 
+    # =====================================================
+    # COMMANDES DISCORD
+    # =====================================================
+    #
+    # Une commande commençant par "!" est toujours envoyée au
+    # système de commandes AVANT toute logique de vérification.
+    #
+    # Ainsi, dans le salon de vérification :
+    #   !delete 219315453
+    #   !latest
+    #   !history 219315453
+    # etc. exécutent directement la commande et ne déclenchent
+    # jamais l'analyse OCR.
+
+    contenu = message.content.strip()
+
+    if contenu.startswith("!"):
+        await bot.process_commands(
+            message
+        )
+        return
+
     # -----------------------------------------------------
     # PING DU BOT -> STATISTIQUES GLOBALES
     # -----------------------------------------------------
