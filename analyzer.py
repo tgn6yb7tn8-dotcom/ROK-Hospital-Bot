@@ -5,15 +5,35 @@ import re
 import sys
 import unicodedata
 from collections import Counter
+from PIL import Image, ImageOps
 
 
 # =========================================================
 # CONFIGURATION
 # =========================================================
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+# Tesseract :
+# - Windows local : installation standard
+# - Railway/Linux : binaire trouvé automatiquement dans PATH
+# - TESSERACT_CMD : permet de forcer un chemin si nécessaire
+import os
+import shutil
+
+_tesseract_env = os.getenv("TESSERACT_CMD")
+
+if _tesseract_env:
+    pytesseract.pytesseract.tesseract_cmd = _tesseract_env
+
+else:
+    _tesseract_linux = shutil.which("tesseract")
+
+    if _tesseract_linux:
+        pytesseract.pytesseract.tesseract_cmd = _tesseract_linux
+
+    else:
+        pytesseract.pytesseract.tesseract_cmd = (
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        )
 
 
 # =========================================================
@@ -1030,41 +1050,39 @@ def extraire_valeurs_barre_ressources(
     image
 ):
     """
-    Lecture robuste de la barre Food/Wood/Stone/Gold sur PC et téléphone.
+    OCR dynamique de toute la barre de ressources.
 
-    Layout téléphone observé :
-        2.1K  1.6K  144
-        -> Wood / Stone / Gold
+    Contrairement à l'ancienne méthode, on ne dépend pas d'une
+    résolution précise ni de quatre crops fixes.
 
-    Layout PC observé :
-        33.1M  10.4M  17.7M  2.2M
-        -> Food / Wood / Stone / Gold
+    Cela permet de fonctionner avec :
+    - capture PC ;
+    - capture téléphone ;
+    - barre avec 4 ressources ;
+    - barre avec seulement 3 ressources visibles.
+
+    Retourne les valeurs de gauche à droite.
     """
 
     h, w = image.shape[:2]
 
-    # ---------------------------------------------------------
-    # PASSAGE 1 : OCR de la barre entière
-    # ---------------------------------------------------------
-    #
-    # La zone verticale est volontairement étroite pour exclure
-    # le timer de soin situé juste en dessous.
-    # ---------------------------------------------------------
-
+    # La barre est toujours située dans la partie inférieure droite
+    # de l'écran de soins. Les pourcentages sont volontairement
+    # suffisamment larges pour couvrir PC et téléphone.
     x1 = int(
-        w * 0.25
+        w * 0.38
     )
 
     x2 = int(
-        w * 0.99
+        w * 0.98
     )
 
     y1 = int(
-        h * 0.70
+        h * 0.65
     )
 
     y2 = int(
-        h * 0.86
+        h * 0.82
     )
 
     crop = image[
@@ -1075,202 +1093,14 @@ def extraire_valeurs_barre_ressources(
     if crop.size == 0:
         return []
 
-    candidats_sequences = []
-
-    for scale in [
-        4,
-        6,
-        8
-    ]:
-
-        agrandi = cv2.resize(
-            crop,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_CUBIC
-        )
-
-        variantes = [
-            agrandi,
-            cv2.cvtColor(
-                agrandi,
-                cv2.COLOR_BGR2GRAY
-            )
-        ]
-
-        for variante in variantes:
-
-            texte = pytesseract.image_to_string(
-                variante,
-                config=(
-                    "--psm 7 "
-                    "-c tessedit_char_whitelist="
-                    "0123456789.KMB,"
-                )
-            )
-
-            texte = re.sub(
-                r"\s+",
-                " ",
-                texte.upper()
-            ).strip()
-
-            if not texte:
-                continue
-
-            # -------------------------------------------------
-            # On récupère les montants AVEC suffixe d'abord.
-            # C'est le format normal pour Food/Wood/Stone.
-            # -------------------------------------------------
-
-            suffix_matches = list(
-                re.finditer(
-                    r"\d+(?:[.,]\d+)?\s*[KMB]",
-                    texte
-                )
-            )
-
-            sequence = []
-
-            for match in suffix_matches:
-
-                valeur = convertir_ressource(
-                    match.group(0)
-                )
-
-                if valeur is not None:
-                    sequence.append(
-                        valeur
-                    )
-
-            # -------------------------------------------------
-            # Gold peut être affiché sans suffixe :
-            # téléphone -> 144.
-            #
-            # On cherche UNIQUEMENT un nombre non-suffixé situé
-            # après le dernier montant suffixé, et proche de celui-ci.
-            # Cela évite les faux nombres comme "5" ou "7" issus
-            # du bouton/timer.
-            # -------------------------------------------------
-
-            if suffix_matches:
-
-                fin_dernier_suffixe = (
-                    suffix_matches[-1].end()
-                )
-
-                apres = texte[
-                    fin_dernier_suffixe:
-                ]
-
-                # Premier nombre court après le dernier suffixe.
-                # On limite à 3 chiffres pour le format Gold courant.
-                match_gold = re.search(
-                    r"^[\s,._-]*(\d{1,3})(?:\s|$)",
-                    apres
-                )
-
-                if match_gold:
-
-                    gold = int(
-                        match_gold.group(1)
-                    )
-
-                    sequence.append(
-                        gold
-                    )
-
-            # -------------------------------------------------
-            # Cas où l'OCR a reconnu directement 3 ou 4 montants.
-            # -------------------------------------------------
-
-            if len(sequence) in (
-                3,
-                4
-            ):
-
-                candidats_sequences.append(
-                    sequence
-                )
-
-    # ---------------------------------------------------------
-    # Choix de la séquence la plus cohérente.
-    # ---------------------------------------------------------
-
-    if candidats_sequences:
-
-        # On privilégie les séquences les plus longues et
-        # les plus répétées par les différentes passes OCR.
-        compte = {}
-
-        for sequence in candidats_sequences:
-
-            cle = tuple(
-                sequence
-            )
-
-            compte[cle] = (
-                compte.get(
-                    cle,
-                    0
-                )
-                +
-                1
-            )
-
-        meilleure = max(
-            compte.items(),
-            key=lambda item: (
-                item[1],
-                len(item[0])
-            )
-        )[0]
-
-        return [
-            (
-                index,
-                valeur
-            )
-            for index, valeur in enumerate(
-                meilleure
-            )
-        ]
-
-    # ---------------------------------------------------------
-    # PASSAGE 2 : fallback OCR dynamique
-    # ---------------------------------------------------------
-
-    x1 = int(
-        w * 0.25
-    )
-
-    x2 = int(
-        w * 0.99
-    )
-
-    y1 = int(
-        h * 0.64
-    )
-
-    y2 = int(
-        h * 0.88
-    )
-
-    crop = image[
-        y1:y2,
-        x1:x2
-    ]
-
-    if crop.size == 0:
-        return []
-
+    # Plusieurs tailles d'agrandissement pour compenser les
+    # différences de résolution PC/téléphone.
     essais = []
 
     for scale in [
         4,
         6,
-        8
+        8,
     ]:
 
         agrandi = cv2.resize(
@@ -1296,7 +1126,7 @@ def extraire_valeurs_barre_ressources(
         for seuil in [
             120,
             150,
-            180
+            180,
         ]:
 
             _, binary = cv2.threshold(
@@ -1327,6 +1157,8 @@ def extraire_valeurs_barre_ressources(
             output_type=pytesseract.Output.DICT
         )
 
+        tokens = []
+
         for i, brut in enumerate(
             data["text"]
         ):
@@ -1337,79 +1169,210 @@ def extraire_valeurs_barre_ressources(
                 continue
 
             try:
+
                 confiance = float(
                     data["conf"][i]
                 )
+
             except (
                 ValueError,
                 TypeError
             ):
+
                 confiance = 0
 
             if confiance < 15:
                 continue
 
-            propre = (
-                brut.upper()
-                .replace(",", ".")
-                .replace(" ", "")
-            )
-
-            valeur = convertir_ressource(
-                propre
-            )
-
-            if valeur is None:
-                continue
-
-            a_suffixe = propre.endswith(
-                (
-                    "K",
-                    "M",
-                    "B"
-                )
-            )
-
-            # Les valeurs sans suffixe ne sont acceptées que
-            # si elles sont plausibles pour Gold et dans la partie
-            # droite de la barre.
             x = (
                 data["left"][i] / scale
                 +
                 x1
             )
 
-            if (
-                not a_suffixe
-                and
-                not (
-                    valeur <= 999
-                    and
-                    x / w >= 0.70
-                )
-            ):
-                continue
-
-            detections.append(
-                (
-                    x,
-                    valeur
-                )
+            y = (
+                data["top"][i] / scale
+                +
+                y1
             )
+
+            largeur = (
+                data["width"][i]
+                /
+                scale
+            )
+
+            centre_y = (
+                y
+                +
+                (
+                    data["height"][i]
+                    /
+                    scale
+                )
+                /
+                2
+            )
+
+            tokens.append(
+                {
+                    "texte":
+                        brut,
+
+                    "x":
+                        x,
+
+                    "centre_y":
+                        centre_y,
+
+                    "largeur":
+                        largeur
+                }
+            )
+
+        # -----------------------------------------------------
+        # Fusion des tokens du type "33.1" + "M"
+        # -----------------------------------------------------
+
+        tokens = sorted(
+            tokens,
+            key=lambda token:
+            token["x"]
+        )
+
+        i = 0
+
+        while i < len(tokens):
+
+            token = tokens[i]
+
+            valeur = analyser_texte_ressource_token(
+                token["texte"]
+            )
+
+            # Cas où OCR sépare le nombre et le suffixe :
+            # "33.1" puis "M".
+            if (
+                valeur is None
+                and
+                i + 1 < len(tokens)
+            ):
+
+                prochain = tokens[i + 1]
+
+                if (
+                    prochain["texte"].upper()
+                    in
+                    {
+                        "K",
+                        "M",
+                        "B"
+                    }
+                    and
+                    abs(
+                        prochain["centre_y"]
+                        -
+                        token["centre_y"]
+                    )
+                    <=
+                    25
+                    and
+                    (
+                        prochain["x"]
+                        -
+                        (
+                            token["x"]
+                            +
+                            token["largeur"]
+                        )
+                    )
+                    <=
+                    35
+                ):
+
+                    valeur = analyser_texte_ressource_token(
+                        token["texte"]
+                        +
+                        prochain["texte"]
+                    )
+
+                    if valeur is not None:
+
+                        centre_x = (
+                            token["x"]
+                            +
+                            prochain["x"]
+                        ) / 2
+
+                        detections.append(
+                            (
+                                centre_x,
+                                valeur
+                            )
+                        )
+
+                        i += 2
+                        continue
+
+            if valeur is not None:
+
+                texte_normalise = (
+                    token["texte"]
+                    .upper()
+                    .replace(",", ".")
+                    .replace(" ", "")
+                )
+
+                # On accepte les montants sans suffixe (ex. 144)
+                # uniquement dans la partie Gold à droite, ou les
+                # gros montants >= 1000. Cela évite qu'un petit bruit
+                # OCR comme "62" devienne une ressource.
+                a_suffixe = texte_normalise.endswith(
+                    (
+                        "K",
+                        "M",
+                        "B"
+                    )
+                )
+
+                est_position_gold = (
+                    token["x"] / w
+                    >=
+                    0.76
+                )
+
+                if (
+                    a_suffixe
+                    or
+                    valeur >= 1000
+                    or
+                    est_position_gold
+                ):
+
+                    detections.append(
+                        (
+                            token["x"],
+                            valeur
+                        )
+                    )
+
+            i += 1
 
     if not detections:
         return []
 
-    # Regrouper les valeurs identiques proches.
-    detections = sorted(
-        detections,
-        key=lambda item:
-        item[0]
-    )
+    # ---------------------------------------------------------
+    # Regroupement des mêmes valeurs OCR issues des différents
+    # essais de seuil / résolution.
+    # ---------------------------------------------------------
 
     groupes = []
 
-    for x, valeur in detections:
+    for x, valeur in sorted(
+        detections,
+        key=lambda item:
+        item[0]
+    ):
 
         trouve = False
 
@@ -1419,22 +1382,21 @@ def extraire_valeurs_barre_ressources(
                 abs(
                     x
                     -
-                    groupe["x"]
+                    groupe["x_moyen"]
                 )
                 <=
-                55
+                45
                 and
                 valeur
                 ==
                 groupe["valeur"]
             ):
 
-                groupe["votes"] += 1
                 groupe["xs"].append(
                     x
                 )
 
-                groupe["x"] = (
+                groupe["x_moyen"] = (
                     sum(
                         groupe["xs"]
                     )
@@ -1444,47 +1406,131 @@ def extraire_valeurs_barre_ressources(
                     )
                 )
 
+                groupe["votes"] += 1
+
                 trouve = True
+
                 break
 
         if not trouve:
 
             groupes.append(
                 {
-                    "x":
+                    "x_moyen":
                         x,
+
                     "xs":
                         [x],
+
                     "valeur":
                         valeur,
+
                     "votes":
                         1
                 }
             )
 
-    groupes = sorted(
-        groupes,
-        key=lambda groupe:
-        groupe["x"]
-    )
-
-    # Ne conserver que des valeurs soutenues.
-    groupes_soutenus = [
+    # On garde les positions suffisamment soutenues.
+    groupes = [
         groupe
         for groupe in groupes
         if groupe["votes"] >= 2
     ]
 
-    if groupes_soutenus:
+    # Si le téléphone/PC donne peu de votes à un montant,
+    # on garde aussi les meilleurs candidats pour ne pas perdre
+    # une ressource parfaitement lisible.
+    if not groupes:
 
-        groupes = groupes_soutenus
+        groupes = []
+
+        for x, valeur in detections:
+
+            existe = False
+
+            for groupe in groupes:
+
+                if (
+                    abs(
+                        x
+                        -
+                        groupe["x_moyen"]
+                    )
+                    <=
+                    45
+                    and
+                    valeur
+                    ==
+                    groupe["valeur"]
+                ):
+
+                    existe = True
+                    break
+
+            if not existe:
+
+                groupes.append(
+                    {
+                        "x_moyen":
+                            x,
+
+                        "valeur":
+                            valeur
+                    }
+                )
+
+    # Fusionner les groupes proches mais garder une valeur stable.
+    groupes = sorted(
+        groupes,
+        key=lambda groupe:
+        groupe["x_moyen"]
+    )
+
+    resultat = []
+
+    for groupe in groupes:
+
+        if not resultat:
+
+            resultat.append(
+                groupe
+            )
+
+            continue
+
+        precedent = resultat[-1]
+
+        if (
+            abs(
+                groupe["x_moyen"]
+                -
+                precedent["x_moyen"]
+            )
+            <=
+            55
+        ):
+
+            # Même ressource détectée plusieurs fois.
+            if (
+                groupe.get("votes", 0)
+                >
+                precedent.get("votes", 0)
+            ):
+
+                resultat[-1] = groupe
+
+        else:
+
+            resultat.append(
+                groupe
+            )
 
     return [
         (
-            groupe["x"],
+            groupe["x_moyen"],
             groupe["valeur"]
         )
-        for groupe in groupes
+        for groupe in resultat
     ]
 
 
@@ -1728,6 +1774,412 @@ def analyser_ressources(
     }
 
 
+
+# =========================================================
+# NOUVEL OCR - FALLBACK ADAPTE
+# =========================================================
+
+def _nouvel_ocr_group_lines(
+    mots
+):
+    """
+    Regroupe les mots OCR par lignes visuelles, inspiré du nouvel
+    OCR fourni par l'utilisateur.
+
+    Cette approche lit toute la zone des troupes puis regroupe les
+    mots selon leur position verticale au lieu de dépendre uniquement
+    des barres vertes.
+    """
+
+    if not mots:
+        return []
+
+    mots = sorted(
+        mots,
+        key=lambda mot: (
+            mot["y"],
+            mot["x"]
+        )
+    )
+
+    lignes = []
+
+    for mot in mots:
+
+        if not lignes:
+
+            lignes.append(
+                [mot]
+            )
+
+            continue
+
+        ligne = lignes[-1]
+
+        reference_y = sum(
+            item["y"]
+            for item in ligne
+        ) / len(ligne)
+
+        if abs(
+            mot["y"]
+            -
+            reference_y
+        ) <= 22:
+
+            ligne.append(
+                mot
+            )
+
+        else:
+
+            lignes.append(
+                [mot]
+            )
+
+    for ligne in lignes:
+
+        ligne.sort(
+            key=lambda mot:
+            mot["x"]
+        )
+
+    return lignes
+
+
+def _nouvel_ocr_nombre_ligne(
+    ligne
+):
+    """
+    Dans chaque ligne, le premier nombre situé après le début
+    du nom de l'unité est la quantité de troupes.
+
+    On évite donc volontairement le nombre dans le bloc
+    "Blessés graves" ou un autre nombre éloigné.
+    """
+
+    if not ligne:
+        return None
+
+    nom_left = None
+
+    for mot in ligne:
+
+        texte = normaliser_texte(
+            mot["texte"]
+        )
+
+        if any(
+            morceau in texte
+            for nom in UNIT_NAMES_SORTED
+            for morceau in nom.split()
+            if len(morceau) >= 4
+        ):
+
+            nom_left = mot["x"]
+            break
+
+    if nom_left is None:
+        return None
+
+    candidats = []
+
+    for mot in ligne:
+
+        if mot["x"] <= nom_left:
+            continue
+
+        brut = (
+            mot["texte"]
+            .replace(",", "")
+            .replace(".", "")
+            .replace(" ", "")
+        )
+
+        if not re.fullmatch(
+            r"\d+",
+            brut
+        ):
+            continue
+
+        try:
+            valeur = int(brut)
+        except ValueError:
+            continue
+
+        # Le tier numérique du portrait est typiquement petit.
+        # On accepte 0..999999999, comme l'analyseur actuel.
+        if 0 <= valeur <= 999999999:
+
+            candidats.append(
+                (
+                    mot["x"],
+                    valeur
+                )
+            )
+
+    if not candidats:
+        return None
+
+    # La quantité est le premier nombre après le nom.
+    return sorted(
+        candidats,
+        key=lambda item:
+        item[0]
+    )[0][1]
+
+
+def analyser_troupes_nouvel_ocr(
+    image
+):
+    """
+    Fallback réellement adapté à notre projet.
+
+    Différences avec le nouvel OCR original :
+    - pas besoin de glyphs.py ;
+    - pas besoin de parse.py ;
+    - réutilise nos listes d'unités FR/EN ;
+    - réutilise nos règles T4/T5 ;
+    - ne remplace pas le système actuel : il ne sert qu'à récupérer
+      une ligne manquante ou un nombre illisible.
+    """
+
+    h, w = image.shape[:2]
+
+    x1 = int(
+        w * 0.30
+    )
+    x2 = int(
+        w * 0.98
+    )
+    y1 = int(
+        h * 0.08
+    )
+    y2 = int(
+        h * 0.72
+    )
+
+    crop = image[
+        y1:y2,
+        x1:x2
+    ]
+
+    if crop.size == 0:
+        return []
+
+    rgb = cv2.cvtColor(
+        crop,
+        cv2.COLOR_BGR2RGB
+    )
+
+    pil = Image.fromarray(
+        rgb
+    )
+
+    # Le nouvel OCR fourni teste plusieurs variantes.
+    variantes = []
+
+    base = ImageOps.autocontrast(
+        pil
+    )
+
+    if max(base.size) < 1600:
+
+        base = base.resize(
+            (
+                base.width * 2,
+                base.height * 2
+            ),
+            Image.LANCZOS
+        )
+
+    variantes.extend(
+        [
+            base,
+            ImageOps.invert(
+                base
+            )
+        ]
+    )
+
+    resultats = []
+
+    for variante in variantes:
+
+        for config in [
+            "--psm 6",
+            "--psm 11"
+        ]:
+
+            data = pytesseract.image_to_data(
+                variante,
+                config=config,
+                output_type=pytesseract.Output.DICT
+            )
+
+            mots = []
+
+            # facteur de réduction éventuel si l'image a été ×2
+            scale = (
+                variante.width
+                /
+                crop.shape[1]
+            )
+
+            for i, texte in enumerate(
+                data["text"]
+            ):
+
+                texte = texte.strip()
+
+                if not texte:
+                    continue
+
+                try:
+                    confiance = float(
+                        data["conf"][i]
+                    )
+                except (
+                    ValueError,
+                    TypeError
+                ):
+                    confiance = -1
+
+                if confiance < 20:
+                    continue
+
+                left = (
+                    data["left"][i]
+                    /
+                    scale
+                    +
+                    x1
+                )
+
+                top = (
+                    data["top"][i]
+                    /
+                    scale
+                    +
+                    y1
+                )
+
+                hauteur = (
+                    data["height"][i]
+                    /
+                    scale
+                )
+
+                mots.append(
+                    {
+                        "texte":
+                            texte,
+
+                        "x":
+                            left,
+
+                        "y":
+                            top
+                            +
+                            hauteur / 2
+                    }
+                )
+
+            for ligne in _nouvel_ocr_group_lines(
+                mots
+            ):
+
+                texte_ligne = normaliser_texte(
+                    " ".join(
+                        mot["texte"]
+                        for mot in ligne
+                    )
+                )
+
+                nom, tier = trouver_unite(
+                    ligne
+                )
+
+                if not nom:
+                    continue
+
+                nombre = (
+                    _nouvel_ocr_nombre_ligne(
+                        ligne
+                    )
+                )
+
+                if nombre is None:
+                    continue
+
+                resultats.append(
+                    {
+                        "nom":
+                            nom,
+
+                        "type":
+                            tier,
+
+                        "nombre":
+                            nombre,
+
+                        "y":
+                            sum(
+                                mot["y"]
+                                for mot in ligne
+                            )
+                            /
+                            len(ligne)
+                    }
+                )
+
+    # Plusieurs variantes peuvent retrouver la même ligne.
+    uniques = []
+
+    for resultat in sorted(
+        resultats,
+        key=lambda item:
+        item["y"]
+    ):
+
+        doublon = False
+
+        for existant in uniques:
+
+            if (
+                resultat["nom"]
+                ==
+                existant["nom"]
+                and
+                resultat["type"]
+                ==
+                existant["type"]
+                and
+                resultat["nombre"]
+                ==
+                existant["nombre"]
+                and
+                abs(
+                    resultat["y"]
+                    -
+                    existant["y"]
+                )
+                <=
+                35
+            ):
+
+                doublon = True
+                break
+
+        if not doublon:
+
+            uniques.append(
+                resultat
+            )
+
+    return uniques
+
+
 # =========================================================
 # ANALYSE D'UNE IMAGE
 # =========================================================
@@ -1861,6 +2313,100 @@ def analyser_image(
                     nombre
             }
         )
+
+    # =====================================================
+    # FALLBACK NOUVEL OCR
+    # =====================================================
+    #
+    # On ne remplace pas une lecture actuelle qui fonctionne.
+    # Le nouvel OCR sert uniquement à compléter une ligne absente
+    # ou un nombre que notre première passe n'a pas réussi à lire.
+
+    try:
+
+        troupes_nouvel_ocr = analyser_troupes_nouvel_ocr(
+            image
+        )
+
+    except Exception as e:
+
+        print(
+            "⚠️ Nouvel OCR ignoré :",
+            repr(e)
+        )
+
+        troupes_nouvel_ocr = []
+
+    for nouvelle in troupes_nouvel_ocr:
+
+        deja = False
+
+        for existante in troupes:
+
+            if (
+                nouvelle["nom"]
+                ==
+                existante["nom"]
+                and
+                nouvelle["type"]
+                ==
+                existante["type"]
+                and
+                nouvelle["nombre"]
+                ==
+                existante["nombre"]
+            ):
+
+                deja = True
+                break
+
+        if not deja:
+
+            # Évite de transformer une lecture du nouvel OCR
+            # en doublon si une ligne équivalente existe proche.
+            proche = False
+
+            for existante in troupes:
+
+                for ligne_existante in lignes:
+
+                    if abs(
+                        ligne_existante
+                        -
+                        nouvelle["y"]
+                    ) <= 35:
+
+                        # L'existence d'une ligne proche suffit à
+                        # laisser l'analyseur principal décider.
+                        proche = True
+                        break
+
+                if proche:
+                    break
+
+            if not proche:
+
+                troupes.append(
+                    {
+                        "nom":
+                            nouvelle["nom"],
+
+                        "type":
+                            nouvelle["type"],
+
+                        "nombre":
+                            nouvelle["nombre"]
+                    }
+                )
+
+                print(
+                    "Nouvel OCR ->",
+                    nouvelle["nom"],
+                    "=",
+                    nouvelle["type"],
+                    "=",
+                    nouvelle["nombre"]
+                )
 
     # =====================================================
     # RESSOURCES
