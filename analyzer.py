@@ -2174,17 +2174,16 @@ def isoler_fenetre_hopital(
     image
 ):
     """
-    Isole uniquement la fenêtre de soins avant l'OCR.
+    Isole la fenêtre complète de l'hôpital.
 
-    Fonctionne :
-    - sur une capture complète avec la ville autour ;
-    - sur une capture où l'hôpital occupe déjà tout l'écran ;
-    - sur PC et téléphone.
+    PRIORITE :
+    1) détecter le bandeau beige du titre "SOIN DES UNITÉS" ;
+    2) reconstruire les limites de la fenêtre à partir de ce bandeau.
 
-    L'idée est de détecter d'abord le grand panneau bleu de l'hôpital,
-    puis son bandeau supérieur beige pour obtenir un cadrage beaucoup
-    plus précis. Tout ce qui se trouve en dehors de cette fenêtre est
-    ensuite ignoré par le reste de l'analyse.
+    C'est beaucoup plus fiable qu'un simple gros contour bleu lorsque
+    la capture contient la ville entière autour de l'hôpital.
+
+    Ensuite, tout l'OCR travaille uniquement dans cette fenêtre.
     """
 
     if image is None or image.size == 0:
@@ -2192,14 +2191,184 @@ def isoler_fenetre_hopital(
 
     h, w = image.shape[:2]
 
-    # ---------------------------------------------------------
-    # 1. Chercher le grand panneau bleu.
-    # ---------------------------------------------------------
-
     hsv = cv2.cvtColor(
         image,
         cv2.COLOR_BGR2HSV
     )
+
+    # ---------------------------------------------------------
+    # 1. Chercher le bandeau beige de la fenêtre d'hôpital.
+    # ---------------------------------------------------------
+    #
+    # Le bandeau est très clair, peu saturé et extrêmement horizontal.
+    # Les éléments lumineux de la ville sont beaucoup plus petits.
+    # ---------------------------------------------------------
+
+    beige_mask = cv2.inRange(
+        hsv,
+        np.array([0, 0, 135]),
+        np.array([179, 120, 255])
+    )
+
+    beige_mask = cv2.morphologyEx(
+        beige_mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (
+                max(
+                    15,
+                    int(w * 0.012)
+                ),
+                max(
+                    7,
+                    int(h * 0.008)
+                )
+            )
+        )
+    )
+
+    contours, _ = cv2.findContours(
+        beige_mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    title_candidates = []
+
+    for contour in contours:
+
+        x, y, ww, hh = cv2.boundingRect(
+            contour
+        )
+
+        if ww < w * 0.35:
+            continue
+
+        if hh < h * 0.02:
+            continue
+
+        if hh > h * 0.16:
+            continue
+
+        ratio = ww / max(
+            hh,
+            1
+        )
+
+        if ratio < 7:
+            continue
+
+        # Une vraie fenêtre est proche du centre de la capture.
+        cx = x + ww / 2
+        center_distance = abs(
+            cx - w / 2
+        ) / max(
+            w,
+            1
+        )
+
+        score = (
+            (ww / w) * 100
+            -
+            center_distance * 25
+        )
+
+        title_candidates.append(
+            (
+                score,
+                x,
+                y,
+                ww,
+                hh
+            )
+        )
+
+    if title_candidates:
+
+        title_candidates.sort(
+            reverse=True
+        )
+
+        _, tx, ty, tw, th = (
+            title_candidates[0]
+        )
+
+        # Le bandeau détecté correspond à l'intérieur de la fenêtre.
+        # On reconstruit le cadre complet autour.
+        left = max(
+            0,
+            int(
+                tx
+                -
+                tw * 0.085
+            )
+        )
+
+        right = min(
+            w,
+            int(
+                tx
+                +
+                tw * 1.005
+            )
+        )
+
+        top = max(
+            0,
+            int(
+                ty
+                -
+                th * 0.82
+            )
+        )
+
+        bottom = min(
+            h,
+            int(
+                ty
+                +
+                th
+                +
+                tw * 0.515
+            )
+        )
+
+        # Vérifier que les proportions correspondent à une fenêtre
+        # d'hôpital plausible.
+        crop_w = right - left
+        crop_h = bottom - top
+
+        if (
+            crop_w > w * 0.35
+            and
+            crop_h > h * 0.30
+            and
+            1.30
+            <=
+            crop_w / max(crop_h, 1)
+            <=
+            3.0
+        ):
+
+            crop = image[
+                top:bottom,
+                left:right
+            ]
+
+            if crop.size:
+
+                print(
+                    f"Fenêtre hôpital isolée par titre : "
+                    f"x={left}:{right}, "
+                    f"y={top}:{bottom}"
+                )
+
+                return crop
+
+    # ---------------------------------------------------------
+    # 2. FALLBACK : ancien détecteur bleu.
+    # ---------------------------------------------------------
 
     blue_mask = cv2.inRange(
         hsv,
@@ -2207,26 +2376,25 @@ def isoler_fenetre_hopital(
         np.array([130, 255, 255])
     )
 
-    kernel_w = max(
-        7,
-        int(w * 0.008)
-    )
-
-    kernel_h = max(
-        7,
-        int(h * 0.008)
-    )
-
     blue_mask = cv2.morphologyEx(
         blue_mask,
         cv2.MORPH_CLOSE,
         cv2.getStructuringElement(
             cv2.MORPH_RECT,
-            (kernel_w, kernel_h)
+            (
+                max(
+                    7,
+                    int(w * 0.008)
+                ),
+                max(
+                    7,
+                    int(h * 0.008)
+                )
+            )
         )
     )
 
-    contours, _ = cv2.findContours(
+    blue_contours, _ = cv2.findContours(
         blue_mask,
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
@@ -2237,7 +2405,7 @@ def isoler_fenetre_hopital(
     image_cx = w / 2
     image_cy = h / 2
 
-    for contour in contours:
+    for contour in blue_contours:
 
         x, y, ww, hh = cv2.boundingRect(
             contour
@@ -2309,7 +2477,7 @@ def isoler_fenetre_hopital(
 
         print(
             "Fenêtre hôpital : "
-            "aucun grand panneau détecté, "
+            "aucune fenêtre détectée, "
             "image complète utilisée."
         )
 
@@ -2321,192 +2489,25 @@ def isoler_fenetre_hopital(
 
     _, x, y, ww, hh = candidats[0]
 
-    # ---------------------------------------------------------
-    # 2. Dans le panneau bleu, chercher le bandeau beige du titre.
-    # ---------------------------------------------------------
-
-    rough_x1 = max(
+    left = max(
         0,
-        x - int(ww * 0.12)
+        x - int(ww * 0.10)
     )
 
-    rough_x2 = min(
+    right = min(
         w,
-        x + ww + int(ww * 0.12)
+        x + ww + int(ww * 0.10)
     )
 
-    rough_y1 = max(
+    top = max(
         0,
-        y - int(hh * 0.25)
+        y - int(hh * 0.20)
     )
 
-    rough_y2 = min(
+    bottom = min(
         h,
-        y + hh + int(hh * 0.12)
+        y + hh + int(hh * 0.10)
     )
-
-    rough = image[
-        rough_y1:rough_y2,
-        rough_x1:rough_x2
-    ]
-
-    rh, rw = rough.shape[:2]
-
-    rough_hsv = cv2.cvtColor(
-        rough,
-        cv2.COLOR_BGR2HSV
-    )
-
-    beige_mask = cv2.inRange(
-        rough_hsv,
-        np.array([0, 0, 135]),
-        np.array([179, 115, 255])
-    )
-
-    beige_mask = cv2.morphologyEx(
-        beige_mask,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_RECT,
-            (
-                max(9, int(rw * 0.01)),
-                max(5, int(rh * 0.008))
-            )
-        )
-    )
-
-    beige_contours, _ = cv2.findContours(
-        beige_mask,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    title_candidates = []
-
-    for contour in beige_contours:
-
-        tx, ty, tw, th = cv2.boundingRect(
-            contour
-        )
-
-        if tw < rw * 0.45:
-            continue
-
-        if th < 20:
-            continue
-
-        if th > rh * 0.18:
-            continue
-
-        if tw / max(
-            th,
-            1
-        ) < 5:
-            continue
-
-        title_candidates.append(
-            (
-                tw * th,
-                tx,
-                ty,
-                tw,
-                th
-            )
-        )
-
-    if title_candidates:
-
-        title_candidates.sort(
-            reverse=True
-        )
-
-        _, tx, ty, tw, th = (
-            title_candidates[0]
-        )
-
-        # Le contour beige correspond à la partie interne du bandeau.
-        # On élargit pour récupérer le cadre extérieur.
-        left = (
-            rough_x1
-            +
-            max(
-                0,
-                tx
-                -
-                int(
-                    tw * 0.04
-                )
-            )
-        )
-
-        right = (
-            rough_x1
-            +
-            min(
-                rw,
-                tx
-                +
-                tw
-                +
-                int(
-                    tw * 0.04
-                )
-            )
-        )
-
-        top = (
-            rough_y1
-            +
-            max(
-                0,
-                ty
-                -
-                int(
-                    th * 0.38
-                )
-            )
-        )
-
-        # Le panneau bleu initial donne une bonne estimation du bas.
-        bottom = min(
-            h,
-            rough_y1
-            +
-            min(
-                rh,
-                max(
-                    ty + th,
-                    y + hh
-                )
-                +
-                int(
-                    hh * 0.05
-                )
-            )
-        )
-
-    else:
-
-        # Fallback : le panneau bleu reste un cadrage utile.
-        left = max(
-            0,
-            x - int(ww * 0.10)
-        )
-
-        right = min(
-            w,
-            x + ww + int(ww * 0.10)
-        )
-
-        top = max(
-            0,
-            y - int(hh * 0.20)
-        )
-
-        bottom = min(
-            h,
-            y + hh + int(hh * 0.10)
-        )
 
     crop = image[
         top:bottom,
@@ -2514,16 +2515,16 @@ def isoler_fenetre_hopital(
     ]
 
     if crop.size == 0:
-
         return image
 
     print(
-        f"Fenêtre hôpital isolée : "
+        f"Fenêtre hôpital isolée par bleu : "
         f"x={left}:{right}, "
         f"y={top}:{bottom}"
     )
 
     return crop
+
 
 
 def analyser_image(
