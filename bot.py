@@ -20,11 +20,17 @@ from analyzer import analyser_plusieurs_images
 TOKEN = os.getenv("DISCORD_TOKEN", "TON_TOKEN_ICI")
 
 VERIFICATION_CHANNEL_ID = 1544613786952925326
-RESULT_CHANNEL_ID = 1544613786952925326
+RESULT_CHANNEL_ID = 1383758654901194875
 
 # Les commandes de gestion seront utilisables uniquement
 # dans le salon des résultats.
 COMMANDS_CHANNEL_ID = RESULT_CHANNEL_ID
+
+# Pour le moment, le bot conserve les messages et captures
+# dans le salon de vérification, même après traitement ou erreur.
+# Remettre cette valeur à True plus tard si on veut réactiver
+# la suppression automatique.
+DELETE_SOURCE_MESSAGES = False
 
 # Nom du rôle Discord autorisé à utiliser !delete et !update.
 # Les membres avec la permission Administrateur sont aussi autorisés.
@@ -744,55 +750,6 @@ def admin_ou_role_autorise():
 
 
 # =========================================================
-# SUPPRESSION DU MESSAGE SOURCE
-# =========================================================
-
-async def supprimer_message_source(
-    message,
-):
-    """
-    Supprime le message original du salon de vérification.
-
-    Cette fonction est utilisée aussi bien après une réussite
-    qu'après une erreur, afin que les captures ne restent jamais
-    dans le salon de vérification.
-    """
-
-    try:
-
-        await message.delete()
-
-        print(
-            "✅ Message source supprimé."
-        )
-
-        return True
-
-    except discord.NotFound:
-
-        # Le message a déjà été supprimé.
-        return True
-
-    except discord.Forbidden:
-
-        print(
-            "⚠️ Impossible de supprimer le message source : "
-            "permission Manage Messages absente."
-        )
-
-        return False
-
-    except discord.HTTPException as e:
-
-        print(
-            "⚠️ Erreur Discord lors de la suppression "
-            f"du message source : {e}"
-        )
-
-        return False
-
-
-# =========================================================
 # NOTIFICATION PRIVEE EN CAS D'ERREUR
 # =========================================================
 
@@ -1492,10 +1449,6 @@ async def on_message(
                 "❌ Salon de résultats introuvable."
             )
 
-            await supprimer_message_source(
-                message
-            )
-
             return
 
         # -------------------------------------------------
@@ -1535,10 +1488,6 @@ async def on_message(
                 ),
             )
 
-            await supprimer_message_source(
-                message
-            )
-
             return
 
         if len(attachments_images) > MAX_IMAGES:
@@ -1558,10 +1507,6 @@ async def on_message(
                     f"You sent too many screenshots. "
                     f"Only {MAX_IMAGES} screenshots are allowed."
                 ),
-            )
-
-            await supprimer_message_source(
-                message
             )
 
             return
@@ -1591,10 +1536,6 @@ async def on_message(
                 ),
             )
 
-            await supprimer_message_source(
-                message
-            )
-
             return
 
         if len(player_id) != 9:
@@ -1616,10 +1557,6 @@ async def on_message(
                     "**9 digits**. Please check for a missing "
                     "or extra digit and send it again."
                 ),
-            )
-
-            await supprimer_message_source(
-                message
             )
 
             return
@@ -1676,10 +1613,6 @@ async def on_message(
                     ),
                 )
 
-                await supprimer_message_source(
-                    message
-                )
-
                 return
 
             if deja_present:
@@ -1702,10 +1635,6 @@ async def on_message(
                         "`hopital` sheet. Your new verification "
                         "was ignored."
                     ),
-                )
-
-                await supprimer_message_source(
-                    message
                 )
 
                 return
@@ -1854,7 +1783,7 @@ async def on_message(
 
                     print(
                         "❌ Analyse invalide : "
-                        "message source supprimé."
+                        "message source conservé."
                     )
 
                     return
@@ -1991,10 +1920,6 @@ async def on_message(
                 # -------------------------------------------------
                 # SUPPRESSION DU MESSAGE SOURCE
                 # -------------------------------------------------
-
-                await supprimer_message_source(
-                    message
-                )
 
             except Exception as e:
 
