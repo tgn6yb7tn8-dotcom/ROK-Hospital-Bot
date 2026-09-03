@@ -536,6 +536,148 @@ def derniere_verification_google(
 
 
 # =========================================================
+# STATISTIQUES DU GOOGLE SHEET
+# =========================================================
+
+def obtenir_statistiques_globales_google():
+    """
+    Lit l'onglet 'hopital' et calcule :
+
+    - nombre de personnes actuellement enregistrées ;
+    - total T4 ;
+    - total T5 ;
+    - puissance totale perdue.
+
+    Formule de puissance :
+    T4 x 4 + T5 x 10
+
+    Le nombre de personnes est basé sur les Player IDs présents
+    dans le Sheet. On compte les IDs uniques par sécurité.
+    """
+
+    worksheet = obtenir_feuille_google()
+
+    valeurs = worksheet.get_all_values()
+
+    if not valeurs:
+        return {
+            "joueurs":
+                0,
+
+            "t4":
+                0,
+
+            "t5":
+                0,
+
+            "puissance":
+                0
+        }
+
+    headers = valeurs[0]
+
+    try:
+        player_col = headers.index(
+            "Player ID"
+        )
+
+        t4_col = headers.index(
+            "T4"
+        )
+
+        t5_col = headers.index(
+            "T5"
+        )
+
+    except ValueError as e:
+
+        raise ValueError(
+            "Les colonnes Player ID, T4 ou T5 "
+            "sont introuvables dans l'onglet hopital."
+        ) from e
+
+    player_ids = set()
+
+    total_t4 = 0
+    total_t5 = 0
+
+    for row in valeurs[1:]:
+
+        # Player ID
+        if player_col < len(row):
+
+            player_id = str(
+                row[player_col]
+            ).strip()
+
+            if player_id:
+                player_ids.add(
+                    player_id
+                )
+
+        # T4
+        if t4_col < len(row):
+
+            brut_t4 = (
+                str(row[t4_col])
+                .replace(" ", "")
+                .replace(",", "")
+                .replace(".", "")
+            )
+
+            if brut_t4.isdigit():
+
+                total_t4 += int(
+                    brut_t4
+                )
+
+        # T5
+        if t5_col < len(row):
+
+            brut_t5 = (
+                str(row[t5_col])
+                .replace(" ", "")
+                .replace(",", "")
+                .replace(".", "")
+            )
+
+            if brut_t5.isdigit():
+
+                total_t5 += int(
+                    brut_t5
+                )
+
+    puissance = (
+        total_t4 * 4
+        +
+        total_t5 * 10
+    )
+
+    return {
+        "joueurs":
+            len(player_ids),
+
+        "t4":
+            total_t4,
+
+        "t5":
+            total_t5,
+
+        "puissance":
+            puissance
+    }
+
+
+def formater_nombre(
+    nombre
+):
+    return f"{nombre:,}".replace(
+        ",",
+        " "
+    )
+
+
+# =========================================================
 # DISCORD
 # =========================================================
 
@@ -768,7 +910,7 @@ async def on_ready():
     )
 
     print(
-        "ROK Hospital Checker connecté"
+        "Emi's slave 2.0 connecté"
     )
 
     print(
@@ -1158,7 +1300,8 @@ async def rokhelp_command(
 ):
 
     message = (
-        "🤖 **ROK Hospital Checker — Commands**\n\n"
+        "🤖 **Emi's slave 2.0 — Commands**\n\n"
+        "`@Emi's slave 2.0` → statistiques globales\n\n"
         "`!latest <Player ID>` → dernière vérification\n"
         "`!history <Player ID>` → historique (10 dernières)\n\n"
         "🔢 A Player ID must contain exactly 9 digits.\n"
@@ -1259,6 +1402,53 @@ async def on_message(
     # -----------------------------------------------------
 
     if message.author.bot:
+        return
+
+    # -----------------------------------------------------
+    # PING DU BOT -> STATISTIQUES GLOBALES
+    # -----------------------------------------------------
+
+    if (
+        bot.user is not None
+        and
+        bot.user in message.mentions
+    ):
+
+        try:
+
+            statistiques = await asyncio.to_thread(
+                obtenir_statistiques_globales_google
+            )
+
+            joueurs = statistiques["joueurs"]
+            total_t4 = statistiques["t4"]
+            total_t5 = statistiques["t5"]
+            puissance = statistiques["puissance"]
+
+            await message.channel.send(
+                "📊 **ROK Hospital Statistics**\n\n"
+                f"👥 **Players verified:** "
+                f"{formater_nombre(joueurs)}\n"
+                f"🟪 **Total T4:** "
+                f"{formater_nombre(total_t4)}\n"
+                f"🟧 **Total T5:** "
+                f"{formater_nombre(total_t5)}\n"
+                f"💀 **Total power lost:** "
+                f"{formater_nombre(puissance)}"
+            )
+
+        except Exception as e:
+
+            print(
+                "❌ Erreur statistiques globales : "
+                f"{repr(e)}"
+            )
+
+            await message.channel.send(
+                "❌ **Unable to retrieve hospital statistics "
+                "from Google Sheets.**"
+            )
+
         return
 
     # -----------------------------------------------------
