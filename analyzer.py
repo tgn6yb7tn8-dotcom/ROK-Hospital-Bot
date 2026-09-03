@@ -11,26 +11,9 @@ from collections import Counter
 # CONFIGURATION
 # =========================================================
 
-# Tesseract :
-# - sur Windows local, on utilise l'installation habituelle ;
-# - sur Railway/Linux, shutil.which("tesseract") trouve le binaire
-#   installé par le Dockerfile.
-import os
-import shutil
-
-_tesseract_env = os.getenv("TESSERACT_CMD")
-
-if _tesseract_env:
-    pytesseract.pytesseract.tesseract_cmd = _tesseract_env
-else:
-    _tesseract_linux = shutil.which("tesseract")
-
-    if _tesseract_linux:
-        pytesseract.pytesseract.tesseract_cmd = _tesseract_linux
-    else:
-        pytesseract.pytesseract.tesseract_cmd = (
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        )
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+)
 
 
 # =========================================================
@@ -1008,34 +991,79 @@ def convertir_ressource(
 
 
 # =========================================================
-# DETECTION DE LA BARRE DE RESSOURCES
+# RESSOURCES
 # =========================================================
 
-def ressources_visibles(
+def analyser_texte_ressource_token(
+    texte
+):
+    """
+    Transforme un token OCR représentant une ressource en entier.
+
+    Exemples :
+    33.1M -> 33100000
+    10.4M -> 10400000
+    2.1K  -> 2100
+    144   -> 144
+    """
+
+    if not texte:
+        return None
+
+    propre = (
+        texte
+        .upper()
+        .replace(",", ".")
+        .replace(" ", "")
+    )
+
+    # Ignore les timers et autres textes contenant ':'.
+    if ":" in propre:
+        return None
+
+    return convertir_ressource(
+        propre
+    )
+
+
+def extraire_valeurs_barre_ressources(
     image
 ):
     """
-    Détermine si la barre des ressources est réellement affichée.
+    OCR dynamique de toute la barre de ressources.
 
-    Quand les soins ont déjà été lancés, le jeu remplace la barre
-    Food / Wood / Stone / Gold par une barre de temps avec un texte
-    du type 00:42:51.
+    Contrairement à l'ancienne méthode, on ne dépend pas d'une
+    résolution précise ni de quatre crops fixes.
 
-    On considère donc les ressources présentes seulement si :
-    - le texte de la zone ne contient pas de ':'
-    - au moins deux valeurs contiennent K/M/B
+    Cela permet de fonctionner avec :
+    - capture PC ;
+    - capture téléphone ;
+    - barre avec 4 ressources ;
+    - barre avec seulement 3 ressources visibles.
 
-    Cette vérification évite notamment de prendre le temps restant
-    pour une quantité de ressources.
+    Retourne les valeurs de gauche à droite.
     """
 
     h, w = image.shape[:2]
 
-    x1 = int(w * 0.40)
-    x2 = int(w * 0.97)
+    # La barre est toujours située dans la partie inférieure droite
+    # de l'écran de soins. Les pourcentages sont volontairement
+    # suffisamment larges pour couvrir PC et téléphone.
+    x1 = int(
+        w * 0.38
+    )
 
-    y1 = int(h * 0.68)
-    y2 = int(h * 0.82)
+    x2 = int(
+        w * 0.98
+    )
+
+    y1 = int(
+        h * 0.65
+    )
+
+    y2 = int(
+        h * 0.82
+    )
 
     crop = image[
         y1:y2,
@@ -1043,74 +1071,432 @@ def ressources_visibles(
     ]
 
     if crop.size == 0:
-        return False
+        return []
 
-    crop = cv2.resize(
-        crop,
-        None,
-        fx=5,
-        fy=5,
-        interpolation=cv2.INTER_CUBIC
-    )
+    # Plusieurs tailles d'agrandissement pour compenser les
+    # différences de résolution PC/téléphone.
+    essais = []
 
-    gray = cv2.cvtColor(
-        crop,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    textes = []
-
-    textes.append(
-        pytesseract.image_to_string(
-            gray,
-            config="--psm 7"
-        )
-    )
-
-    for seuil in [
-        120,
-        140,
-        160,
-        180,
+    for scale in [
+        4,
+        6,
+        8,
     ]:
 
-        _, binary = cv2.threshold(
-            gray,
-            seuil,
-            255,
-            cv2.THRESH_BINARY
+        agrandi = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
         )
 
-        textes.append(
-            pytesseract.image_to_string(
-                binary,
-                config="--psm 7"
+        gray = cv2.cvtColor(
+            agrandi,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        essais.append(
+            (
+                gray,
+                scale
             )
         )
 
-    for texte in textes:
+        for seuil in [
+            120,
+            150,
+            180,
+        ]:
 
-        texte_upper = texte.upper()
+            _, binary = cv2.threshold(
+                gray,
+                seuil,
+                255,
+                cv2.THRESH_BINARY
+            )
 
-        # La présence d'un séparateur ':' indique la barre
-        # de temps des soins, pas la barre de ressources.
-        if ":" in texte_upper:
-            continue
+            essais.append(
+                (
+                    binary,
+                    scale
+                )
+            )
 
-        matches = re.findall(
-            r"\d+(?:[.,]\d+)?\s*[KMB]",
-            texte_upper
+    detections = []
+
+    for image_ocr, scale in essais:
+
+        data = pytesseract.image_to_data(
+            image_ocr,
+            config=(
+                "--psm 6 "
+                "-c tessedit_char_whitelist="
+                "0123456789.KMB,"
+            ),
+            output_type=pytesseract.Output.DICT
         )
 
-        if len(matches) >= 2:
-            return True
+        tokens = []
 
-    return False
+        for i, brut in enumerate(
+            data["text"]
+        ):
+
+            brut = brut.strip()
+
+            if not brut:
+                continue
+
+            try:
+
+                confiance = float(
+                    data["conf"][i]
+                )
+
+            except (
+                ValueError,
+                TypeError
+            ):
+
+                confiance = 0
+
+            if confiance < 15:
+                continue
+
+            x = (
+                data["left"][i] / scale
+                +
+                x1
+            )
+
+            y = (
+                data["top"][i] / scale
+                +
+                y1
+            )
+
+            largeur = (
+                data["width"][i]
+                /
+                scale
+            )
+
+            centre_y = (
+                y
+                +
+                (
+                    data["height"][i]
+                    /
+                    scale
+                )
+                /
+                2
+            )
+
+            tokens.append(
+                {
+                    "texte":
+                        brut,
+
+                    "x":
+                        x,
+
+                    "centre_y":
+                        centre_y,
+
+                    "largeur":
+                        largeur
+                }
+            )
+
+        # -----------------------------------------------------
+        # Fusion des tokens du type "33.1" + "M"
+        # -----------------------------------------------------
+
+        tokens = sorted(
+            tokens,
+            key=lambda token:
+            token["x"]
+        )
+
+        i = 0
+
+        while i < len(tokens):
+
+            token = tokens[i]
+
+            valeur = analyser_texte_ressource_token(
+                token["texte"]
+            )
+
+            # Cas où OCR sépare le nombre et le suffixe :
+            # "33.1" puis "M".
+            if (
+                valeur is None
+                and
+                i + 1 < len(tokens)
+            ):
+
+                prochain = tokens[i + 1]
+
+                if (
+                    prochain["texte"].upper()
+                    in
+                    {
+                        "K",
+                        "M",
+                        "B"
+                    }
+                    and
+                    abs(
+                        prochain["centre_y"]
+                        -
+                        token["centre_y"]
+                    )
+                    <=
+                    25
+                    and
+                    (
+                        prochain["x"]
+                        -
+                        (
+                            token["x"]
+                            +
+                            token["largeur"]
+                        )
+                    )
+                    <=
+                    35
+                ):
+
+                    valeur = analyser_texte_ressource_token(
+                        token["texte"]
+                        +
+                        prochain["texte"]
+                    )
+
+                    if valeur is not None:
+
+                        centre_x = (
+                            token["x"]
+                            +
+                            prochain["x"]
+                        ) / 2
+
+                        detections.append(
+                            (
+                                centre_x,
+                                valeur
+                            )
+                        )
+
+                        i += 2
+                        continue
+
+            if valeur is not None:
+
+                detections.append(
+                    (
+                        token["x"],
+                        valeur
+                    )
+                )
+
+            i += 1
+
+    if not detections:
+        return []
+
+    # ---------------------------------------------------------
+    # Regroupement des mêmes valeurs OCR issues des différents
+    # essais de seuil / résolution.
+    # ---------------------------------------------------------
+
+    groupes = []
+
+    for x, valeur in sorted(
+        detections,
+        key=lambda item:
+        item[0]
+    ):
+
+        trouve = False
+
+        for groupe in groupes:
+
+            if (
+                abs(
+                    x
+                    -
+                    groupe["x_moyen"]
+                )
+                <=
+                45
+                and
+                valeur
+                ==
+                groupe["valeur"]
+            ):
+
+                groupe["xs"].append(
+                    x
+                )
+
+                groupe["x_moyen"] = (
+                    sum(
+                        groupe["xs"]
+                    )
+                    /
+                    len(
+                        groupe["xs"]
+                    )
+                )
+
+                groupe["votes"] += 1
+
+                trouve = True
+
+                break
+
+        if not trouve:
+
+            groupes.append(
+                {
+                    "x_moyen":
+                        x,
+
+                    "xs":
+                        [x],
+
+                    "valeur":
+                        valeur,
+
+                    "votes":
+                        1
+                }
+            )
+
+    # On garde les positions suffisamment soutenues.
+    groupes = [
+        groupe
+        for groupe in groupes
+        if groupe["votes"] >= 2
+    ]
+
+    # Si le téléphone/PC donne peu de votes à un montant,
+    # on garde aussi les meilleurs candidats pour ne pas perdre
+    # une ressource parfaitement lisible.
+    if not groupes:
+
+        groupes = []
+
+        for x, valeur in detections:
+
+            existe = False
+
+            for groupe in groupes:
+
+                if (
+                    abs(
+                        x
+                        -
+                        groupe["x_moyen"]
+                    )
+                    <=
+                    45
+                    and
+                    valeur
+                    ==
+                    groupe["valeur"]
+                ):
+
+                    existe = True
+                    break
+
+            if not existe:
+
+                groupes.append(
+                    {
+                        "x_moyen":
+                            x,
+
+                        "valeur":
+                            valeur
+                    }
+                )
+
+    # Fusionner les groupes proches mais garder une valeur stable.
+    groupes = sorted(
+        groupes,
+        key=lambda groupe:
+        groupe["x_moyen"]
+    )
+
+    resultat = []
+
+    for groupe in groupes:
+
+        if not resultat:
+
+            resultat.append(
+                groupe
+            )
+
+            continue
+
+        precedent = resultat[-1]
+
+        if (
+            abs(
+                groupe["x_moyen"]
+                -
+                precedent["x_moyen"]
+            )
+            <=
+            55
+        ):
+
+            # Même ressource détectée plusieurs fois.
+            if (
+                groupe.get("votes", 0)
+                >
+                precedent.get("votes", 0)
+            ):
+
+                resultat[-1] = groupe
+
+        else:
+
+            resultat.append(
+                groupe
+            )
+
+    return [
+        (
+            groupe["x_moyen"],
+            groupe["valeur"]
+        )
+        for groupe in resultat
+    ]
 
 
-# =========================================================
-# LECTURE D'UNE RESSOURCE
-# =========================================================
+def ressources_visibles(
+    image
+):
+    """
+    Une barre de ressources est considérée présente si l'OCR
+    trouve au moins deux montants cohérents dans sa zone.
+
+    Le timer de soins (00:42:51, etc.) ne passe pas ce filtre.
+    """
+
+    valeurs = extraire_valeurs_barre_ressources(
+        image
+    )
+
+    return len(valeurs) >= 2
+
 
 def lire_ressource(
     image,
@@ -1119,6 +1505,9 @@ def lire_ressource(
     x2,
     y2
 ):
+    """
+    Fonction conservée pour compatibilité.
+    """
 
     crop = preparer_crop(
         image,
@@ -1130,7 +1519,6 @@ def lire_ressource(
     )
 
     if crop is None:
-
         return None
 
     gray = cv2.cvtColor(
@@ -1178,25 +1566,20 @@ def lire_ressource(
         )
 
         if valeur is not None:
-
             valeurs.append(
                 valeur
             )
 
     if not valeurs:
-
         return None
 
-    # Vote majoritaire
     compteur = Counter(
         valeurs
     )
 
-    meilleur = compteur.most_common(
+    return compteur.most_common(
         1
     )[0][0]
-
-    return meilleur
 
 
 # =========================================================
@@ -1207,13 +1590,13 @@ def analyser_ressources(
     image
 ):
 
-    # -----------------------------------------------------
-    # Aucun soin lancé / ressources visibles
-    # -----------------------------------------------------
+    detections = (
+        extraire_valeurs_barre_ressources(
+            image
+        )
+    )
 
-    if not ressources_visibles(
-        image
-    ):
+    if len(detections) < 2:
 
         print()
         print(
@@ -1235,41 +1618,69 @@ def analyser_ressources(
                 None
         }
 
-    # -----------------------------------------------------
-    # Ressources visibles -> lecture normale
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
+    # Les ressources sont dans l'ordre gauche -> droite.
+    #
+    # 4 valeurs :
+    # Food / Wood / Stone / Gold
+    #
+    # 3 valeurs :
+    # Dans la version téléphone montrée, Food n'est pas affichée
+    # et on a Wood / Stone / Gold.
+    # ---------------------------------------------------------
 
-    nourriture = lire_ressource(
-        image,
-        0.41,
-        0.72,
-        0.55,
-        0.81
-    )
+    valeurs = [
+        valeur
+        for _, valeur in detections
+    ]
 
-    bois = lire_ressource(
-        image,
-        0.54,
-        0.72,
-        0.68,
-        0.81
-    )
+    if len(valeurs) >= 4:
 
-    pierre = lire_ressource(
-        image,
-        0.68,
-        0.72,
-        0.82,
-        0.81
-    )
+        nourriture = valeurs[0]
+        bois = valeurs[1]
+        pierre = valeurs[2]
+        or_ = valeurs[3]
 
-    or_ = lire_ressource(
-        image,
-        0.82,
-        0.72,
-        0.96,
-        0.81
-    )
+    elif len(valeurs) == 3:
+
+        nourriture = None
+        bois = valeurs[0]
+        pierre = valeurs[1]
+        or_ = valeurs[2]
+
+    else:
+
+        # Cas inhabituel : 2 ressources visibles.
+        # On utilise leurs positions horizontales pour déterminer
+        # les ressources connues.
+        positions = [
+            x
+            for x, _ in detections
+        ]
+
+        nourriture = None
+        bois = None
+        pierre = None
+        or_ = None
+
+        # Position relative dans la barre.
+        for x, valeur in detections:
+
+            relative = x / image.shape[1]
+
+            if relative < 0.55:
+
+                # Dans la version téléphone observée, le premier
+                # montant visible à cet endroit est le bois.
+                bois = valeur
+
+            elif relative < 0.78:
+
+                pierre = valeur
+
+            else:
+
+                or_ = valeur
 
     print()
     print(
@@ -1293,7 +1704,6 @@ def analyser_ressources(
     )
 
     return {
-
         "nourriture":
             nourriture,
 
@@ -1653,7 +2063,34 @@ def analyser_plusieurs_images(
     # RESSOURCES
     # =====================================================
 
-    premiere = resultats_images[0]
+    # =====================================================
+    # RESSOURCES
+    # =====================================================
+    #
+    # Lors d'une vérification avec deux captures, l'une peut être
+    # en version PC et l'autre en version téléphone. On prend,
+    # pour chaque ressource, la première valeur réellement détectée.
+    # Ainsi une ressource absente sur l'une des captures peut être
+    # récupérée depuis l'autre si elle y est visible.
+
+    nourriture = None
+    bois = None
+    pierre = None
+    or_ = None
+
+    for image_result in resultats_images:
+
+        if nourriture is None:
+            nourriture = image_result["nourriture"]
+
+        if bois is None:
+            bois = image_result["bois"]
+
+        if pierre is None:
+            pierre = image_result["pierre"]
+
+        if or_ is None:
+            or_ = image_result["or"]
 
     # =====================================================
     # RESULTAT
@@ -1671,24 +2108,16 @@ def analyser_plusieurs_images(
             total,
 
         "nourriture":
-            premiere[
-                "nourriture"
-            ],
+            nourriture,
 
         "bois":
-            premiere[
-                "bois"
-            ],
+            bois,
 
         "pierre":
-            premiere[
-                "pierre"
-            ],
+            pierre,
 
         "or":
-            premiere[
-                "or"
-            ]
+            or_
     }
 
 
