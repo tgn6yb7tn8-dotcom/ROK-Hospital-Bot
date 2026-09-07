@@ -1972,6 +1972,202 @@ def _ocr_pc_value(
     )[0][0]
 
 
+def _ocr_gold_pc(
+    image,
+    x_icon,
+    y_icon,
+    x_right
+):
+    """
+    Lecteur dédié à l'or du layout PC.
+
+    L'icône de l'or est juste à gauche du montant 2.2M. Sur certaines
+    captures, Tesseract interprète un bord de l'icône comme un "1" et
+    retourne 12.2M. On effectue donc plusieurs coupes horizontales
+    légèrement décalées et on ne garde que les valeurs corroborées.
+    """
+
+    h, w = image.shape[:2]
+
+    valeurs = []
+
+    demi = max(
+        18,
+        int(
+            h * 0.035
+        )
+    )
+
+    y1 = max(
+        0,
+        int(
+            y_icon - demi
+        )
+    )
+
+    y2 = min(
+        h,
+        int(
+            y_icon + demi
+        )
+    )
+
+    # Plusieurs offsets : ils doivent tous lire le même montant si
+    # le texte est réellement présent.
+    for offset in (
+        8,
+        12,
+        16,
+        20,
+        24
+    ):
+
+        x1 = max(
+            0,
+            int(
+                x_icon + offset
+            )
+        )
+
+        x2 = min(
+            w - 2,
+            int(
+                x_right
+            )
+        )
+
+        if x2 <= x1:
+            continue
+
+        crop = image[
+            y1:y2,
+            x1:x2
+        ]
+
+        if crop.size == 0:
+            continue
+
+        for scale in (
+            4,
+            5,
+            6
+        ):
+
+            enlarged = cv2.resize(
+                crop,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_CUBIC
+            )
+
+            gray = cv2.cvtColor(
+                enlarged,
+                cv2.COLOR_BGR2GRAY
+            )
+
+            variants = [
+                enlarged,
+                gray
+            ]
+
+            for threshold in (
+                120,
+                160,
+                200
+            ):
+
+                _, binary = cv2.threshold(
+                    gray,
+                    threshold,
+                    255,
+                    cv2.THRESH_BINARY
+                )
+
+                variants.append(
+                    binary
+                )
+
+            for variant in variants:
+
+                for psm in (
+                    6,
+                    7,
+                    11
+                ):
+
+                    try:
+
+                        ocr = pytesseract.image_to_string(
+                            variant,
+                            config=(
+                                f"--psm {psm} "
+                                "-c tessedit_char_whitelist="
+                                "0123456789.KMB"
+                            )
+                        )
+
+                    except Exception:
+
+                        continue
+
+                    ocr = (
+                        ocr
+                        .upper()
+                        .replace(
+                            ",",
+                            "."
+                        )
+                        .replace(
+                            " ",
+                            ""
+                        )
+                        .replace(
+                            "\n",
+                            ""
+                        )
+                        .strip()
+                    )
+
+                    for token in re.findall(
+                        r"\d+(?:\.\d+)?[KMB]",
+                        ocr
+                    ):
+
+                        value = convertir_ressource(
+                            token
+                        )
+
+                        if (
+                            value is not None
+                            and
+                            value > 0
+                        ):
+
+                            valeurs.append(
+                                value
+                            )
+
+    if not valeurs:
+        return None
+
+    # Vote exact. Une valeur réellement présente devrait survivre à
+    # plusieurs offsets indépendants.
+    compte = Counter(
+        valeurs
+    )
+
+    meilleure, votes = (
+        compte.most_common(
+            1
+        )[0]
+    )
+
+    # Si 12.2M apparaît une fois mais 2.2M plusieurs fois, 2.2M gagne.
+    return meilleure
+
+
+
 def _analyser_ressources_pc(
     image
 ):
@@ -2057,13 +2253,24 @@ def _analyser_ressources_pc(
             )
 
         # Important : +8 preserve le premier chiffre de 17.7M.
-        value = _ocr_pc_value(
-            image,
-            x + 8,
-            y - int(h * 0.035),
-            right,
-            y + int(h * 0.035)
-        )
+        if resource == "gold":
+
+            value = _ocr_gold_pc(
+                image,
+                x,
+                y,
+                right
+            )
+
+        else:
+
+            value = _ocr_pc_value(
+                image,
+                x + 8,
+                y - int(h * 0.035),
+                right,
+                y + int(h * 0.035)
+            )
 
         if value is not None:
 
