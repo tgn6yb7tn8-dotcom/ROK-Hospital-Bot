@@ -437,16 +437,15 @@ def ocr_panneau_troupes(
     image
 ):
     """
-    OCR du panneau des troupes.
-    La fenêtre a déjà été normalisée en amont.
+    OCR des noms et quantités des troupes, robuste aux petites captures.
     """
 
     h, w = image.shape[:2]
 
-    x1 = int(w * 0.34)
-    x2 = int(w * 0.97)
-    y1 = int(h * 0.08)
-    y2 = int(h * 0.76)
+    x1 = int(w * 0.30)
+    x2 = int(w * 0.985)
+    y1 = int(h * 0.07)
+    y2 = int(h * 0.78)
 
     crop = image[
         y1:y2,
@@ -456,26 +455,47 @@ def ocr_panneau_troupes(
     if crop.size == 0:
         return []
 
-    mots = []
+    gray = cv2.cvtColor(
+        crop,
+        cv2.COLOR_BGR2GRAY
+    )
 
-    for scale in (
-        1.0,
-        1.35
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    )
+
+    variantes = [
+        crop,
+        gray,
+        clahe.apply(gray)
+    ]
+
+    for block in (
+        21,
+        31
     ):
 
-        if scale == 1.0:
+        b = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            block,
+            6
+        )
 
-            travail = crop
+        variantes.append(
+            b
+        )
 
-        else:
+        variantes.append(
+            cv2.bitwise_not(b)
+        )
 
-            travail = cv2.resize(
-                crop,
-                None,
-                fx=scale,
-                fy=scale,
-                interpolation=cv2.INTER_CUBIC
-            )
+    mots = []
+
+    for variante in variantes:
 
         for psm in (
             6,
@@ -483,18 +503,18 @@ def ocr_panneau_troupes(
         ):
 
             data = pytesseract.image_to_data(
-                travail,
+                variante,
                 config=f"--psm {psm}",
                 output_type=pytesseract.Output.DICT
             )
 
-            for i, texte in enumerate(
+            for i, brut in enumerate(
                 data["text"]
             ):
 
-                texte = texte.strip()
+                brut = brut.strip()
 
-                if not texte:
+                if not brut:
                     continue
 
                 try:
@@ -505,108 +525,110 @@ def ocr_panneau_troupes(
                     ValueError,
                     TypeError
                 ):
-                    confiance = 0
+                    confiance = 0.0
 
-                left = (
-                    data["left"][i]
-                    /
-                    scale
-                    +
-                    x1
-                )
-
-                top = (
-                    data["top"][i]
-                    /
-                    scale
-                    +
-                    y1
-                )
-
-                largeur = (
+                largeur = float(
                     data["width"][i]
-                    /
-                    scale
                 )
 
-                hauteur = (
+                hauteur = float(
                     data["height"][i]
-                    /
-                    scale
                 )
+
+                if (
+                    largeur <= 0
+                    or
+                    hauteur <= 0
+                ):
+                    continue
 
                 mots.append(
                     {
                         "texte":
-                            texte,
+                            brut,
 
                         "x":
-                            left,
+                            float(
+                                data["left"][i]
+                                +
+                                x1
+                            ),
 
                         "y":
-                            top + hauteur / 2,
+                            float(
+                                data["top"][i]
+                                +
+                                hauteur / 2
+                                +
+                                y1
+                            ),
+
+                        "largeur":
+                            largeur,
+
+                        "hauteur":
+                            hauteur,
 
                         "confiance":
                             confiance
                     }
                 )
 
-    # Dédupliquer les mêmes tokens produits par les différentes passes.
     resultat = []
 
     for mot in mots:
 
-        doublon = False
+        ancien = None
 
-        for ancien in resultat:
+        for candidat in resultat:
 
             if (
-                mot["texte"].lower()
+                normaliser_texte(
+                    mot["texte"]
+                )
                 ==
-                ancien["texte"].lower()
+                normaliser_texte(
+                    candidat["texte"]
+                )
                 and
                 abs(
                     mot["x"]
                     -
-                    ancien["x"]
+                    candidat["x"]
                 )
                 <=
-                18
+                25
                 and
                 abs(
                     mot["y"]
                     -
-                    ancien["y"]
+                    candidat["y"]
                 )
                 <=
-                18
+                25
             ):
 
-                if (
-                    mot["confiance"]
-                    >
-                    ancien["confiance"]
-                ):
-
-                    ancien.update(
-                        mot
-                    )
-
-                doublon = True
+                ancien = candidat
                 break
 
-        if not doublon:
+        if ancien is None:
+
             resultat.append(
+                mot
+            )
+
+        elif (
+            mot["confiance"]
+            >
+            ancien["confiance"]
+        ):
+
+            ancien.update(
                 mot
             )
 
     return resultat
 
-
-
-# =========================================================
-# DETECTER LIGNES DEPUIS OCR
-# =========================================================
 
 def detecter_lignes_depuis_ocr(
     mots_panel
@@ -1476,78 +1498,70 @@ def _lire_montant_a_cote_icone(
     autres_icones
 ):
     """
-    Lit uniquement le montant situé à droite d'une icône de ressource.
-
-    C'est volontairement plus précis que l'ancien OCR de toute la barre :
-    les nombres globaux de la ville et les nombres du panneau de troupes
-    ne peuvent plus être confondus avec les coûts de soins.
+    Lit le montant immédiatement à droite de l'icône.
     """
 
     h, w = image.shape[:2]
 
-    x = float(
-        icon["x"]
-    )
+    x = float(icon["x"])
+    y = float(icon["y"])
 
-    y = float(
-        icon["y"]
-    )
-
-    # La prochaine icône sert de frontière droite pour le texte actuel.
-    prochaines = [
+    suivantes = sorted(
         autre["x"]
         for autre in autres_icones
         if autre["x"] > x
-    ]
+    )
 
-    if prochaines:
+    if suivantes:
 
-        limite_droite = min(
-            prochaines
-        ) - 8
+        droite = min(
+            suivantes[0] - 6,
+            x + max(
+                120,
+                int(w * 0.22)
+            )
+        )
 
     else:
 
-        limite_droite = min(
-            w - 5,
+        droite = min(
+            w - 3,
             x + max(
-                95,
-                w * 0.12
+                160,
+                int(w * 0.25)
             )
         )
 
     gauche = int(
         min(
-            w - 1,
-            x + 8
+            w - 2,
+            x + max(
+                6,
+                int(w * 0.008)
+            )
         )
     )
 
     droite = int(
         max(
-            gauche + 10,
-            limite_droite
+            gauche + 20,
+            droite
         )
     )
 
-    haut = int(
-        max(
-            0,
-            y - max(
-                18,
-                h * 0.025
-            )
-        )
+    demi = max(
+        18,
+        int(h * 0.045)
     )
 
-    bas = int(
-        min(
-            h,
-            y + max(
-                18,
-                h * 0.025
-            )
-        )
+    haut = max(
+        0,
+        int(y - demi)
+    )
+
+    bas = min(
+        h,
+        int(y + demi)
     )
 
     crop = image[
@@ -1558,13 +1572,13 @@ def _lire_montant_a_cote_icone(
     if crop.size == 0:
         return None
 
-    candidats = []
+    valeurs = []
 
     for scale in (
+        4,
         6,
         8,
-        10,
-        12
+        10
     ):
 
         agrandi = cv2.resize(
@@ -1572,7 +1586,7 @@ def _lire_montant_a_cote_icone(
             None,
             fx=scale,
             fy=scale,
-            interpolation=cv2.INTER_LANCZOS4
+            interpolation=cv2.INTER_CUBIC
         )
 
         gray = cv2.cvtColor(
@@ -1580,21 +1594,25 @@ def _lire_montant_a_cote_icone(
             cv2.COLOR_BGR2GRAY
         )
 
+        clahe = cv2.createCLAHE(
+            clipLimit=2.0,
+            tileGridSize=(8, 8)
+        )
+
         variantes = [
-            gray
+            gray,
+            clahe.apply(gray)
         ]
 
         for seuil in (
             80,
-            100,
-            120,
+            110,
             140,
-            160,
-            180,
+            170,
             200
         ):
 
-            _, binary = cv2.threshold(
+            _, b = cv2.threshold(
                 gray,
                 seuil,
                 255,
@@ -1602,7 +1620,7 @@ def _lire_montant_a_cote_icone(
             )
 
             variantes.append(
-                binary
+                b
             )
 
         for variante in variantes:
@@ -1610,7 +1628,8 @@ def _lire_montant_a_cote_icone(
             for psm in (
                 6,
                 7,
-                11
+                11,
+                13
             ):
 
                 try:
@@ -1628,18 +1647,18 @@ def _lire_montant_a_cote_icone(
 
                     continue
 
-                texte = texte.upper().strip()
-
-                if not texte:
-                    continue
-
-                # On recherche un montant décimal avec suffixe en priorité.
-                matches = re.findall(
-                    r"\d+(?:[.,]\d+)?\s*[KMB]",
+                texte = (
                     texte
+                    .upper()
+                    .replace(",", ".")
+                    .strip()
                 )
 
-                for match in matches:
+                # Montants complets.
+                for match in re.findall(
+                    r"\d+(?:\.\d+)?\s*[KMB]",
+                    texte
+                ):
 
                     valeur = convertir_ressource(
                         match
@@ -1651,71 +1670,47 @@ def _lire_montant_a_cote_icone(
                         valeur > 0
                     ):
 
-                        candidats.append(
-                            (
-                                valeur,
-                                True
-                            )
+                        valeurs.append(
+                            valeur
                         )
 
-                # Gold peut être affiché sans suffixe :
-                # 137 / 144 / etc.
+                # Gold peut ne pas avoir de suffixe.
                 if icon["resource"] == "gold":
 
-                    sans_suffixe = re.fullmatch(
-                        r"\s*(\d{1,4})\s*",
+                    morceaux = re.findall(
+                        r"\b\d{1,5}\b",
                         texte
                     )
 
-                    if sans_suffixe:
+                    for morceau in morceaux:
 
                         valeur = int(
-                            sans_suffixe.group(1)
+                            morceau
                         )
 
-                        if valor := (
-                            valeur > 0
+                        if (
+                            1
+                            <=
+                            valeur
+                            <=
+                            99999
                         ):
 
-                            candidats.append(
-                                (
-                                    valeur,
-                                    False
-                                )
+                            valeurs.append(
+                                valeur
                             )
 
-    if not candidats:
+    if not valeurs:
         return None
 
-    # Les lectures avec suffixe sont prioritaires.
-    suffixes = [
-        valeur
-        for valeur, avec_suffixe in candidats
-        if avec_suffixe
-    ]
-
-    base_vote = (
-        suffixes
-        if suffixes
-        else
-        [
-            valeur
-            for valeur, _ in candidats
-        ]
+    compte = Counter(
+        valeurs
     )
 
-    compteur = Counter(
-        base_vote
-    )
-
-    return compteur.most_common(
+    return compte.most_common(
         1
     )[0][0]
 
-
-# =========================================================
-# ANALYSER RESSOURCES
-# =========================================================
 
 def analyser_ressources(
     image
@@ -2206,11 +2201,10 @@ def isoler_fenetre_hopital(
 
 def normaliser_resolution_ocr(
     image,
-    largeur_cible=1400
+    largeur_cible=1800
 ):
     """
-    Normalise la résolution de la fenêtre d'hôpital avant OCR.
-    Les petites captures sont agrandies sans changer leur ratio.
+    Agrandit automatiquement les petites captures avant toute détection.
     """
     if image is None or image.size == 0:
         return image
@@ -2220,27 +2214,21 @@ def normaliser_resolution_ocr(
     if w >= largeur_cible:
         return image
 
-    ratio = min(
+    facteur = min(
         largeur_cible / float(w),
         4.0
-    )
-
-    nouvelle_largeur = int(
-        round(w * ratio)
-    )
-
-    nouvelle_hauteur = int(
-        round(h * ratio)
     )
 
     return cv2.resize(
         image,
         (
-            nouvelle_largeur,
-            nouvelle_hauteur
+            int(round(w * facteur)),
+            int(round(h * facteur))
         ),
         interpolation=cv2.INTER_CUBIC
     )
+
+
 
 
 def analyser_image(
@@ -2258,25 +2246,25 @@ def analyser_image(
             f"{image_path}"
         )
 
-    # Toutes les fonctions OCR ci-dessous travaillent uniquement
-    # sur la fenêtre de soins isolée.
+    image = normaliser_resolution_ocr(
+        image,
+        largeur_cible=1800
+    )
+
+    print(
+        f"Résolution source normalisée : "
+        f"{image.shape[1]}x{image.shape[0]}"
+    )
+
     image = isoler_fenetre_hopital(
         image
     )
 
-    # Toutes les tailles de captures sont ramenées à une résolution
-    # de travail similaire pour améliorer l'OCR des petits screenshots.
-    image = normaliser_resolution_ocr(
-        image,
-        largeur_cible=1400
-    )
-
     print(
-        f"Résolution OCR : "
+        f"Résolution fenêtre hôpital : "
         f"{image.shape[1]}x{image.shape[0]}"
     )
 
-    print()
     print(
         "========================================"
     )
