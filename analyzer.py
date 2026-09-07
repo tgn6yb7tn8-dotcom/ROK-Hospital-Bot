@@ -2172,19 +2172,29 @@ def _analyser_ressources_pc(
     image
 ):
     """
-    Layout PC : les quatre ressources occupent quatre slots fixes.
+    Lecteur PC.
 
-    On ne fait donc pas deviner le type par OCR :
-        slot 1 = Food
-        slot 2 = Wood
-        slot 3 = Stone
-        slot 4 = Gold
+    IMPORTANT :
+    Le reste de l'analyseur est volontairement inchangé.
 
-    Cette méthode est utilisée uniquement si au moins trois slots sont
-    effectivement lisibles comme des montants K/M/B.
+    Deux formats arrivent au bot :
+      - capture complète du jeu : barre de ressources vers 74-75 % de la
+        hauteur ;
+      - fenêtre d'hôpital déjà isolée : barre vers ~81 %.
+
+    On distingue les deux avec le ratio largeur/hauteur.
     """
 
     h, w = image.shape[:2]
+
+    ratio = (
+        w
+        /
+        max(
+            h,
+            1
+        )
+    )
 
     slots = [
         ("food", 0.445),
@@ -2195,9 +2205,9 @@ def _analyser_ressources_pc(
 
     positions = [
         int(
-            w * ratio
+            w * ratio_x
         )
-        for _, ratio in slots
+        for _, ratio_x in slots
     ]
 
     result = {
@@ -2216,15 +2226,27 @@ def _analyser_ressources_pc(
 
     lus = 0
 
-    y = int(
-        h * 0.81
-    )
+    # Capture complète : 1080x680 et équivalents.
+    # Fenêtre isolée : format plus large.
+    if ratio < 1.70:
+
+        y = int(
+            h * 0.745
+        )
+
+    else:
+
+        y = int(
+            h * 0.81
+        )
 
     for index, (resource, _) in enumerate(
         slots
     ):
 
-        x = positions[index]
+        x = positions[
+            index
+        ]
 
         if index + 1 < len(
             positions
@@ -2252,7 +2274,6 @@ def _analyser_ressources_pc(
                 )
             )
 
-        # Important : +8 preserve le premier chiffre de 17.7M.
         if resource == "gold":
 
             value = _ocr_gold_pc(
@@ -2267,9 +2288,13 @@ def _analyser_ressources_pc(
             value = _ocr_pc_value(
                 image,
                 x + 8,
-                y - int(h * 0.035),
+                y - int(
+                    h * 0.035
+                ),
                 right,
-                y + int(h * 0.035)
+                y + int(
+                    h * 0.035
+                )
             )
 
         if value is not None:
@@ -2280,8 +2305,8 @@ def _analyser_ressources_pc(
 
             lus += 1
 
-    # Si quatre montants sont trouvés, c'est quasi certainement le layout PC.
-    # Trois suffisent quand une ressource est temporairement illisible.
+    # Même règle qu'avant : au moins trois valeurs valides pour confirmer
+    # qu'on est bien sur un layout PC.
     if lus < 3:
         return None
 
@@ -2300,7 +2325,8 @@ def _analyser_ressources_pc(
     }
 
 
-def _analyser_ressources_legacy(
+
+def analyser_ressources(
     image
 ):
     """
@@ -2341,518 +2367,6 @@ def _analyser_ressources_legacy(
         )
 
         return pc
-
-    return _analyser_ressources_legacy(
-        image
-    )
-
-
-
-
-
-def _ocr_phone_plain_amount(
-    image,
-    x1,
-    y1,
-    x2,
-    y2
-):
-    """
-    Lit UN montant du layout téléphone.
-
-    Important : 432, 324 et 29 sont des nombres simples. Ils ne doivent
-    pas être convertis en 432000/324000. Une conversion K/M/B n'est faite
-    que lorsqu'un suffixe est réellement présent.
-    """
-
-    h, w = image.shape[:2]
-
-    x1 = max(0, int(x1))
-    y1 = max(0, int(y1))
-    x2 = min(w, int(x2))
-    y2 = min(h, int(y2))
-
-    if x2 <= x1 or y2 <= y1:
-        return None
-
-    crop = image[
-        y1:y2,
-        x1:x2
-    ]
-
-    if crop.size == 0:
-        return None
-
-    observations = []
-
-    # Pour les screenshots normalisés, quelques passes suffisent et évitent
-    # de multiplier inutilement les appels Tesseract.
-    for scale in (
-        4,
-        6,
-        8
-    ):
-
-        enlarged = cv2.resize(
-            crop,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_CUBIC
-        )
-
-        gray = cv2.cvtColor(
-            enlarged,
-            cv2.COLOR_BGR2GRAY
-        )
-
-        variants = [
-            gray
-        ]
-
-        # Contraste local.
-        clahe = cv2.createCLAHE(
-            clipLimit=2.0,
-            tileGridSize=(8, 8)
-        )
-
-        variants.append(
-            clahe.apply(
-                gray
-            )
-        )
-
-        # Le texte clair du jeu est bien séparé par ces seuils.
-        for threshold in (
-            110,
-            150,
-            190
-        ):
-
-            _, binary = cv2.threshold(
-                gray,
-                threshold,
-                255,
-                cv2.THRESH_BINARY
-            )
-
-            variants.append(
-                binary
-            )
-
-        for variant in variants:
-
-            for psm in (
-                6,
-                7
-            ):
-
-                try:
-
-                    data = pytesseract.image_to_data(
-                        variant,
-                        config=(
-                            f"--psm {psm} "
-                            "-c tessedit_char_whitelist="
-                            "0123456789.KMB"
-                        ),
-                        output_type=pytesseract.Output.DICT
-                    )
-
-                except Exception:
-
-                    continue
-
-                tokens = [
-                    token.strip().upper()
-                    for token in data["text"]
-                    if token.strip()
-                ]
-
-                # Montants complets.
-                for token in tokens:
-
-                    token = token.replace(
-                        ",",
-                        "."
-                    )
-
-                    if re.fullmatch(
-                        r"\d+(?:\.\d+)?[KMB]",
-                        token
-                    ):
-
-                        value = convertir_ressource(
-                            token
-                        )
-
-                        if (
-                            value is not None
-                            and
-                            value > 0
-                        ):
-
-                            observations.append(
-                                value
-                            )
-
-                    elif re.fullmatch(
-                        r"\d{1,6}",
-                        token
-                    ):
-
-                        value = int(
-                            token
-                        )
-
-                        if (
-                            0 < value <= 999999
-                        ):
-
-                            observations.append(
-                                value
-                            )
-
-                # OCR peut découper un nombre en plusieurs tokens.
-                for i in range(
-                    len(tokens) - 1
-                ):
-
-                    a = (
-                        tokens[i]
-                        .replace(",", ".")
-                    )
-
-                    b = (
-                        tokens[i + 1]
-                        .replace(",", ".")
-                    )
-
-                    fusion = (
-                        a
-                        +
-                        b
-                    )
-
-                    if re.fullmatch(
-                        r"\d{2,6}",
-                        fusion
-                    ):
-
-                        value = int(
-                            fusion
-                        )
-
-                        if (
-                            0 < value <= 999999
-                        ):
-
-                            observations.append(
-                                value
-                            )
-
-    if not observations:
-        return None
-
-    # Vote majoritaire.
-    counts = Counter(
-        observations
-    )
-
-    return counts.most_common(
-        1
-    )[0][0]
-
-
-def _analyser_ressources_phone(
-    image
-):
-    """
-    Analyse le layout téléphone à partir des vraies icônes détectées.
-
-    Les trois slots sont identifiés par leur position, mais leur TYPE est
-    donné par l'icône. On ne suppose donc jamais :
-        slot 1 = Food
-        slot 2 = Wood
-        slot 3 = Gold
-
-    Cela permet notamment :
-        Food / Wood / Gold
-        Food / Stone / Gold
-        Food / Wood / Stone
-        etc.
-    """
-
-    h, w = image.shape[:2]
-
-    icons = _trouver_icones_ressources(
-        image
-    )
-
-    # Garder uniquement les icônes de la ligne de ressources.
-    # Les faux composants des compteurs de l'hôpital sont plus hauts.
-    icons = [
-        icon
-        for icon in icons
-        if (
-            icon["x"] >= w * 0.40
-            and
-            icon["y"] >= h * 0.70
-            and
-            icon["y"] <= h * 0.92
-        )
-    ]
-
-    # Dédupliquer par proximité spatiale.
-    icons = sorted(
-        icons,
-        key=lambda icon:
-        icon["x"]
-    )
-
-    uniques = []
-
-    for icon in icons:
-
-        proche = None
-
-        for ancien in uniques:
-
-            if (
-                abs(
-                    icon["x"]
-                    -
-                    ancien["x"]
-                )
-                <=
-                35
-                and
-                abs(
-                    icon["y"]
-                    -
-                    ancien["y"]
-                )
-                <=
-                30
-            ):
-
-                proche = ancien
-                break
-
-        if proche is None:
-            uniques.append(
-                icon
-            )
-
-    icons = uniques
-
-    # Le layout téléphone doit présenter au moins deux ressources.
-    if len(icons) < 2:
-        return None
-
-    result = {
-        "food":
-            None,
-
-        "wood":
-            None,
-
-        "stone":
-            None,
-
-        "gold":
-            None
-    }
-
-    for index, icon in enumerate(
-        icons
-    ):
-
-        x = float(
-            icon["x"]
-        )
-
-        y = float(
-            icon["y"]
-        )
-
-        # Limite droite = juste avant l'icône suivante.
-        if index + 1 < len(icons):
-
-            right = (
-                icons[index + 1]["x"]
-                -
-                max(
-                    8,
-                    int(
-                        w * 0.008
-                    )
-                )
-            )
-
-        else:
-
-            right = min(
-                w - 3,
-                x
-                +
-                int(
-                    w * 0.16
-                )
-            )
-
-        half = max(
-            16,
-            int(
-                h * 0.045
-            )
-        )
-
-        value = _ocr_phone_plain_amount(
-            image,
-            x + max(
-                3,
-                int(
-                    w * 0.004
-                )
-            ),
-            y - half,
-            right,
-            y + half
-        )
-
-        if value is None:
-            continue
-
-        resource = icon[
-            "resource"
-        ]
-
-        if result[
-            resource
-        ] is None:
-
-            result[
-                resource
-            ] = value
-
-    # Éviter de confondre un layout PC incomplet avec le téléphone.
-    # Au moins deux ressources lisibles sont nécessaires.
-    if sum(
-        value is not None
-        for value in result.values()
-    ) < 2:
-
-        return None
-
-    return {
-        "nourriture":
-            result["food"],
-
-        "bois":
-            result["wood"],
-
-        "pierre":
-            result["stone"],
-
-        "or":
-            result["gold"]
-    }
-
-
-def analyser_ressources(
-    image
-):
-    """
-    Détection finale des ressources.
-
-    IMPORTANT :
-    On essaie d'abord le layout PC. Le parser PC demande au minimum
-    trois montants K/M/B dans les quatre slots PC, ce qui constitue
-    une signature forte du layout PC.
-
-    Seulement si le PC n'est pas confirmé, on essaie le téléphone.
-    Cela empêche le parser téléphone de prendre des morceaux de la
-    barre PC et de produire par exemple Food=4 / Stone=8 / Gold=33.
-    """
-
-    # ---------------------------------------------------------
-    # 1. PC d'abord
-    # ---------------------------------------------------------
-
-    pc = _analyser_ressources_pc(
-        image
-    )
-
-    if pc is not None:
-
-        print()
-        print(
-            "Ressources PC :"
-        )
-
-        print(
-            "Nourriture :",
-            pc["nourriture"]
-        )
-
-        print(
-            "Bois       :",
-            pc["bois"]
-        )
-
-        print(
-            "Pierre     :",
-            pc["pierre"]
-        )
-
-        print(
-            "Or         :",
-            pc["or"]
-        )
-
-        return pc
-
-    # ---------------------------------------------------------
-    # 2. Téléphone ensuite
-    # ---------------------------------------------------------
-
-    phone = _analyser_ressources_phone(
-        image
-    )
-
-    if phone is not None:
-
-        print()
-        print(
-            "Ressources téléphone :"
-        )
-
-        print(
-            "Nourriture :",
-            phone["nourriture"]
-        )
-
-        print(
-            "Bois       :",
-            phone["bois"]
-        )
-
-        print(
-            "Pierre     :",
-            phone["pierre"]
-        )
-
-        print(
-            "Or         :",
-            phone["or"]
-        )
-
-        return phone
-
-    # ---------------------------------------------------------
-    # 3. Ancien fallback en dernier recours
-    # ---------------------------------------------------------
 
     return _analyser_ressources_legacy(
         image
@@ -3532,6 +3046,7 @@ def analyser_plusieurs_images(
 
         for existant in troupes_finales:
 
+            # Cas historique : même nom + même tier + même quantité.
             if est_doublon(
                 troupe,
                 existant
@@ -3544,6 +3059,53 @@ def analyser_plusieurs_images(
                     f"{troupe.get('nom')} "
                     f"{troupe['type']} "
                     f"{troupe['nombre']}"
+                )
+
+                break
+
+            # Cas OCR : même unité + même tier, mais quantité différente
+            # à cause d'une erreur de lecture sur la seconde capture.
+            #
+            # On conserve la première lecture. Cela évite qu'une même
+            # unité apparaisse deux fois dans le total simplement parce
+            # que Tesseract a lu, par exemple, 5 puis 8.
+            nom_a = normaliser_texte(
+                str(
+                    troupe.get(
+                        "nom",
+                        ""
+                    )
+                )
+            )
+
+            nom_b = normaliser_texte(
+                str(
+                    existant.get(
+                        "nom",
+                        ""
+                    )
+                )
+            )
+
+            if (
+                nom_a
+                and
+                nom_a == nom_b
+                and
+                troupe["type"]
+                ==
+                existant["type"]
+            ):
+
+                doublon = True
+
+                print(
+                    "Doublon OCR ignoré -> "
+                    f"{troupe.get('nom')} "
+                    f"{troupe['type']} "
+                    f"{troupe['nombre']} "
+                    f"(lecture conservée : "
+                    f"{existant['nombre']})"
                 )
 
                 break
