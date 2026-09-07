@@ -1712,7 +1712,7 @@ def _lire_montant_a_cote_icone(
     )[0][0]
 
 
-def analyser_ressources(
+def _analyser_ressources_legacy(
     image
 ):
     """
@@ -1832,6 +1832,312 @@ def analyser_ressources(
         "or":
             resultats["gold"]
     }
+
+
+
+
+
+def _ocr_pc_value(
+    image,
+    x1,
+    y1,
+    x2,
+    y2
+):
+    """
+    OCR spécialisé d'une valeur PC de type 33.1M / 10.4M / 17.7M / 2.2M.
+    """
+
+    h, w = image.shape[:2]
+
+    x1 = max(0, int(x1))
+    y1 = max(0, int(y1))
+    x2 = min(w, int(x2))
+    y2 = min(h, int(y2))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    crop = image[
+        y1:y2,
+        x1:x2
+    ]
+
+    if crop.size == 0:
+        return None
+
+    observations = []
+
+    for scale in (
+        4,
+        5
+    ):
+
+        enlarged = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        gray = cv2.cvtColor(
+            enlarged,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        for variant in (
+            enlarged,
+            gray
+        ):
+
+            try:
+
+                ocr = pytesseract.image_to_string(
+                    variant,
+                    config=(
+                        "--psm 7 "
+                        "-c tessedit_char_whitelist="
+                        "0123456789.KMB"
+                    )
+                )
+
+            except Exception:
+
+                continue
+
+            ocr = (
+                ocr
+                .upper()
+                .replace(
+                    ",",
+                    "."
+                )
+                .replace(
+                    " ",
+                    ""
+                )
+                .replace(
+                    "\n",
+                    ""
+                )
+                .strip()
+            )
+
+            for token in re.findall(
+                r"\d+(?:\.\d+)?[KMB]",
+                ocr
+            ):
+
+                value = convertir_ressource(
+                    token
+                )
+
+                if (
+                    value is not None
+                    and
+                    value > 0
+                ):
+
+                    observations.append(
+                        (
+                            value,
+                            token
+                        )
+                    )
+
+    if not observations:
+        return None
+
+    # Prefer exact decimal readings (33.1M instead of 331M, etc.).
+    decimal_values = [
+        value
+        for value, token in observations
+        if "." in token
+    ]
+
+    if decimal_values:
+
+        return Counter(
+            decimal_values
+        ).most_common(
+            1
+        )[0][0]
+
+    return Counter(
+        value
+        for value, _ in observations
+    ).most_common(
+        1
+    )[0][0]
+
+
+def _analyser_ressources_pc(
+    image
+):
+    """
+    Layout PC : les quatre ressources occupent quatre slots fixes.
+
+    On ne fait donc pas deviner le type par OCR :
+        slot 1 = Food
+        slot 2 = Wood
+        slot 3 = Stone
+        slot 4 = Gold
+
+    Cette méthode est utilisée uniquement si au moins trois slots sont
+    effectivement lisibles comme des montants K/M/B.
+    """
+
+    h, w = image.shape[:2]
+
+    slots = [
+        ("food", 0.445),
+        ("wood", 0.590),
+        ("stone", 0.735),
+        ("gold", 0.865),
+    ]
+
+    positions = [
+        int(
+            w * ratio
+        )
+        for _, ratio in slots
+    ]
+
+    result = {
+        "food":
+            None,
+
+        "wood":
+            None,
+
+        "stone":
+            None,
+
+        "gold":
+            None
+    }
+
+    lus = 0
+
+    y = int(
+        h * 0.81
+    )
+
+    for index, (resource, _) in enumerate(
+        slots
+    ):
+
+        x = positions[index]
+
+        if index + 1 < len(
+            positions
+        ):
+
+            right = (
+                positions[index + 1]
+                -
+                max(
+                    8,
+                    int(
+                        w * 0.006
+                    )
+                )
+            )
+
+        else:
+
+            right = min(
+                w - 3,
+                x
+                +
+                int(
+                    w * 0.15
+                )
+            )
+
+        # Important : +8 preserve le premier chiffre de 17.7M.
+        value = _ocr_pc_value(
+            image,
+            x + 8,
+            y - int(h * 0.035),
+            right,
+            y + int(h * 0.035)
+        )
+
+        if value is not None:
+
+            result[
+                resource
+            ] = value
+
+            lus += 1
+
+    # Si quatre montants sont trouvés, c'est quasi certainement le layout PC.
+    # Trois suffisent quand une ressource est temporairement illisible.
+    if lus < 3:
+        return None
+
+    return {
+        "nourriture":
+            result["food"],
+
+        "bois":
+            result["wood"],
+
+        "pierre":
+            result["stone"],
+
+        "or":
+            result["gold"]
+    }
+
+
+def analyser_ressources(
+    image
+):
+    """
+    Essaie d'abord le lecteur PC à quatre slots.
+    Si la capture n'est pas au format PC, l'ancien lecteur téléphone
+    reste utilisé sans modification.
+    """
+
+    pc = _analyser_ressources_pc(
+        image
+    )
+
+    if pc is not None:
+
+        print()
+        print(
+            "Ressources PC :"
+        )
+
+        print(
+            "Nourriture :",
+            pc["nourriture"]
+        )
+
+        print(
+            "Bois       :",
+            pc["bois"]
+        )
+
+        print(
+            "Pierre     :",
+            pc["pierre"]
+        )
+
+        print(
+            "Or         :",
+            pc["or"]
+        )
+
+        return pc
+
+    return _analyser_ressources_legacy(
+        image
+    )
 
 
 # =========================================================
