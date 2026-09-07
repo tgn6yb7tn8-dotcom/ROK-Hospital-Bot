@@ -2300,7 +2300,7 @@ def _analyser_ressources_pc(
     }
 
 
-def analyser_ressources(
+def _analyser_ressources_legacy(
     image
 ):
     """
@@ -2340,6 +2340,475 @@ def analyser_ressources(
             pc["or"]
         )
 
+        return pc
+
+    return _analyser_ressources_legacy(
+        image
+    )
+
+
+
+
+
+def _ocr_phone_plain_amount(
+    image,
+    x1,
+    y1,
+    x2,
+    y2
+):
+    """
+    Lit UN montant du layout téléphone.
+
+    Important : 432, 324 et 29 sont des nombres simples. Ils ne doivent
+    pas être convertis en 432000/324000. Une conversion K/M/B n'est faite
+    que lorsqu'un suffixe est réellement présent.
+    """
+
+    h, w = image.shape[:2]
+
+    x1 = max(0, int(x1))
+    y1 = max(0, int(y1))
+    x2 = min(w, int(x2))
+    y2 = min(h, int(y2))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    crop = image[
+        y1:y2,
+        x1:x2
+    ]
+
+    if crop.size == 0:
+        return None
+
+    observations = []
+
+    # Pour les screenshots normalisés, quelques passes suffisent et évitent
+    # de multiplier inutilement les appels Tesseract.
+    for scale in (
+        4,
+        6,
+        8
+    ):
+
+        enlarged = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        gray = cv2.cvtColor(
+            enlarged,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        variants = [
+            gray
+        ]
+
+        # Contraste local.
+        clahe = cv2.createCLAHE(
+            clipLimit=2.0,
+            tileGridSize=(8, 8)
+        )
+
+        variants.append(
+            clahe.apply(
+                gray
+            )
+        )
+
+        # Le texte clair du jeu est bien séparé par ces seuils.
+        for threshold in (
+            110,
+            150,
+            190
+        ):
+
+            _, binary = cv2.threshold(
+                gray,
+                threshold,
+                255,
+                cv2.THRESH_BINARY
+            )
+
+            variants.append(
+                binary
+            )
+
+        for variant in variants:
+
+            for psm in (
+                6,
+                7
+            ):
+
+                try:
+
+                    data = pytesseract.image_to_data(
+                        variant,
+                        config=(
+                            f"--psm {psm} "
+                            "-c tessedit_char_whitelist="
+                            "0123456789.KMB"
+                        ),
+                        output_type=pytesseract.Output.DICT
+                    )
+
+                except Exception:
+
+                    continue
+
+                tokens = [
+                    token.strip().upper()
+                    for token in data["text"]
+                    if token.strip()
+                ]
+
+                # Montants complets.
+                for token in tokens:
+
+                    token = token.replace(
+                        ",",
+                        "."
+                    )
+
+                    if re.fullmatch(
+                        r"\d+(?:\.\d+)?[KMB]",
+                        token
+                    ):
+
+                        value = convertir_ressource(
+                            token
+                        )
+
+                        if (
+                            value is not None
+                            and
+                            value > 0
+                        ):
+
+                            observations.append(
+                                value
+                            )
+
+                    elif re.fullmatch(
+                        r"\d{1,6}",
+                        token
+                    ):
+
+                        value = int(
+                            token
+                        )
+
+                        if (
+                            0 < value <= 999999
+                        ):
+
+                            observations.append(
+                                value
+                            )
+
+                # OCR peut découper un nombre en plusieurs tokens.
+                for i in range(
+                    len(tokens) - 1
+                ):
+
+                    a = (
+                        tokens[i]
+                        .replace(",", ".")
+                    )
+
+                    b = (
+                        tokens[i + 1]
+                        .replace(",", ".")
+                    )
+
+                    fusion = (
+                        a
+                        +
+                        b
+                    )
+
+                    if re.fullmatch(
+                        r"\d{2,6}",
+                        fusion
+                    ):
+
+                        value = int(
+                            fusion
+                        )
+
+                        if (
+                            0 < value <= 999999
+                        ):
+
+                            observations.append(
+                                value
+                            )
+
+    if not observations:
+        return None
+
+    # Vote majoritaire.
+    counts = Counter(
+        observations
+    )
+
+    return counts.most_common(
+        1
+    )[0][0]
+
+
+def _analyser_ressources_phone(
+    image
+):
+    """
+    Analyse le layout téléphone à partir des vraies icônes détectées.
+
+    Les trois slots sont identifiés par leur position, mais leur TYPE est
+    donné par l'icône. On ne suppose donc jamais :
+        slot 1 = Food
+        slot 2 = Wood
+        slot 3 = Gold
+
+    Cela permet notamment :
+        Food / Wood / Gold
+        Food / Stone / Gold
+        Food / Wood / Stone
+        etc.
+    """
+
+    h, w = image.shape[:2]
+
+    icons = _trouver_icones_ressources(
+        image
+    )
+
+    # Garder uniquement les icônes de la ligne de ressources.
+    # Les faux composants des compteurs de l'hôpital sont plus hauts.
+    icons = [
+        icon
+        for icon in icons
+        if (
+            icon["x"] >= w * 0.40
+            and
+            icon["y"] >= h * 0.70
+            and
+            icon["y"] <= h * 0.92
+        )
+    ]
+
+    # Dédupliquer par proximité spatiale.
+    icons = sorted(
+        icons,
+        key=lambda icon:
+        icon["x"]
+    )
+
+    uniques = []
+
+    for icon in icons:
+
+        proche = None
+
+        for ancien in uniques:
+
+            if (
+                abs(
+                    icon["x"]
+                    -
+                    ancien["x"]
+                )
+                <=
+                35
+                and
+                abs(
+                    icon["y"]
+                    -
+                    ancien["y"]
+                )
+                <=
+                30
+            ):
+
+                proche = ancien
+                break
+
+        if proche is None:
+            uniques.append(
+                icon
+            )
+
+    icons = uniques
+
+    # Le layout téléphone doit présenter au moins deux ressources.
+    if len(icons) < 2:
+        return None
+
+    result = {
+        "food":
+            None,
+
+        "wood":
+            None,
+
+        "stone":
+            None,
+
+        "gold":
+            None
+    }
+
+    for index, icon in enumerate(
+        icons
+    ):
+
+        x = float(
+            icon["x"]
+        )
+
+        y = float(
+            icon["y"]
+        )
+
+        # Limite droite = juste avant l'icône suivante.
+        if index + 1 < len(icons):
+
+            right = (
+                icons[index + 1]["x"]
+                -
+                max(
+                    8,
+                    int(
+                        w * 0.008
+                    )
+                )
+            )
+
+        else:
+
+            right = min(
+                w - 3,
+                x
+                +
+                int(
+                    w * 0.16
+                )
+            )
+
+        half = max(
+            16,
+            int(
+                h * 0.045
+            )
+        )
+
+        value = _ocr_phone_plain_amount(
+            image,
+            x + max(
+                3,
+                int(
+                    w * 0.004
+                )
+            ),
+            y - half,
+            right,
+            y + half
+        )
+
+        if value is None:
+            continue
+
+        resource = icon[
+            "resource"
+        ]
+
+        if result[
+            resource
+        ] is None:
+
+            result[
+                resource
+            ] = value
+
+    # Éviter de confondre un layout PC incomplet avec le téléphone.
+    # Au moins deux ressources lisibles sont nécessaires.
+    if sum(
+        value is not None
+        for value in result.values()
+    ) < 2:
+
+        return None
+
+    return {
+        "nourriture":
+            result["food"],
+
+        "bois":
+            result["wood"],
+
+        "pierre":
+            result["stone"],
+
+        "or":
+            result["gold"]
+    }
+
+
+def analyser_ressources(
+    image
+):
+    """
+    Ordre de détection :
+        1. Téléphone : icônes réelles + nombres simples exacts.
+        2. PC : lecteur spécialisé à quatre slots.
+        3. Ancien fallback, uniquement si aucune des deux méthodes
+           précédentes n'est suffisamment fiable.
+    """
+
+    phone = _analyser_ressources_phone(
+        image
+    )
+
+    if phone is not None:
+
+        print()
+        print(
+            "Ressources téléphone :"
+        )
+
+        print(
+            "Nourriture :",
+            phone["nourriture"]
+        )
+
+        print(
+            "Bois       :",
+            phone["bois"]
+        )
+
+        print(
+            "Pierre     :",
+            phone["pierre"]
+        )
+
+        print(
+            "Or         :",
+            phone["or"]
+        )
+
+        return phone
+
+    pc = _analyser_ressources_pc(
+        image
+    )
+
+    if pc is not None:
         return pc
 
     return _analyser_ressources_legacy(
