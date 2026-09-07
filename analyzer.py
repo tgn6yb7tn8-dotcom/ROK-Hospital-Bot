@@ -2764,12 +2764,58 @@ def analyser_ressources(
     image
 ):
     """
-    Ordre de détection :
-        1. Téléphone : icônes réelles + nombres simples exacts.
-        2. PC : lecteur spécialisé à quatre slots.
-        3. Ancien fallback, uniquement si aucune des deux méthodes
-           précédentes n'est suffisamment fiable.
+    Détection finale des ressources.
+
+    IMPORTANT :
+    On essaie d'abord le layout PC. Le parser PC demande au minimum
+    trois montants K/M/B dans les quatre slots PC, ce qui constitue
+    une signature forte du layout PC.
+
+    Seulement si le PC n'est pas confirmé, on essaie le téléphone.
+    Cela empêche le parser téléphone de prendre des morceaux de la
+    barre PC et de produire par exemple Food=4 / Stone=8 / Gold=33.
     """
+
+    # ---------------------------------------------------------
+    # 1. PC d'abord
+    # ---------------------------------------------------------
+
+    pc = _analyser_ressources_pc(
+        image
+    )
+
+    if pc is not None:
+
+        print()
+        print(
+            "Ressources PC :"
+        )
+
+        print(
+            "Nourriture :",
+            pc["nourriture"]
+        )
+
+        print(
+            "Bois       :",
+            pc["bois"]
+        )
+
+        print(
+            "Pierre     :",
+            pc["pierre"]
+        )
+
+        print(
+            "Or         :",
+            pc["or"]
+        )
+
+        return pc
+
+    # ---------------------------------------------------------
+    # 2. Téléphone ensuite
+    # ---------------------------------------------------------
 
     phone = _analyser_ressources_phone(
         image
@@ -2804,12 +2850,9 @@ def analyser_ressources(
 
         return phone
 
-    pc = _analyser_ressources_pc(
-        image
-    )
-
-    if pc is not None:
-        return pc
+    # ---------------------------------------------------------
+    # 3. Ancien fallback en dernier recours
+    # ---------------------------------------------------------
 
     return _analyser_ressources_legacy(
         image
