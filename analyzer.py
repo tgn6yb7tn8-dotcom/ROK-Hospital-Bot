@@ -828,17 +828,15 @@ def trouver_nombre(
 ):
 
     """
-    Trouve la quantité de la ligne en se basant sur la position
-    réelle du NOM de l'unité.
+    Trouve la quantité de la ligne.
 
-    Le problème précédent était que la fenêtre verticale pouvait
-    contenir plusieurs nombres, notamment le total des blessés.
-    Ici, la quantité doit :
-      1. être proche verticalement du nom de l'unité ;
-      2. être située à droite du nom ;
-      3. être dans le panneau des unités.
+    Comportement historique conservé pour toutes les tailles.
 
-    Cela évite de récupérer 280004 depuis "Blessés graves".
+    Correction ciblée :
+    sur les fenêtres isolées d'environ 1373 px de large, certaines
+    captures ont un décalage vertical plus important entre le nom de
+    l'unité et le nombre. On autorise alors 60 px et, si plusieurs
+    nombres concurrents existent, on privilégie le plus long nombre.
     """
 
     if not mots or not nom_unite:
@@ -867,8 +865,6 @@ def trouver_nombre(
                 mot
             )
 
-    # Si OCR a regroupé plusieurs mots du nom dans un seul token,
-    # on retrouve quand même un point de référence avec le premier mot.
     if not mots_nom:
 
         premier = nom_morceaux[0]
@@ -902,7 +898,22 @@ def trouver_nombre(
         for mot in mots_nom
     )
 
-    # Quantité sur la même ligne et à droite du nom.
+    # Seulement pour le nouveau layout ~1373 px.
+    layout_nouvelle_taille = (
+        1350
+        <=
+        image_width
+        <=
+        1400
+    )
+
+    tolerance_y = (
+        60
+        if layout_nouvelle_taille
+        else
+        35
+    )
+
     candidats_ligne = [
         candidat
         for candidat in candidats
@@ -913,7 +924,7 @@ def trouver_nombre(
                 nom_y
             )
             <=
-            35
+            tolerance_y
         )
         and
         (
@@ -931,14 +942,33 @@ def trouver_nombre(
 
     if candidats_ligne:
 
+        if layout_nouvelle_taille:
+
+            # Pour cette seule taille, l'OCR génère parfois :
+            #   1225
+            #   225
+            #   25
+            # à des positions proches. Le nombre à 4 chiffres est
+            # le plus cohérent avec le texte réel.
+            return max(
+                candidats_ligne,
+                key=lambda candidat:
+                (
+                    len(
+                        str(
+                            candidat["valeur"]
+                        )
+                    ),
+                    candidat["x"]
+                )
+            )["valeur"]
+
         return max(
             candidats_ligne,
             key=lambda candidat:
             candidat["x"]
         )["valeur"]
 
-    # Second essai : certains OCR placent le point gauche du nombre
-    # légèrement avant la fin du dernier mot du nom.
     candidats_secours = [
         candidat
         for candidat in candidats
@@ -949,7 +979,7 @@ def trouver_nombre(
                 nom_y
             )
             <=
-            35
+            tolerance_y
         )
         and
         (
@@ -960,6 +990,21 @@ def trouver_nombre(
     ]
 
     if candidats_secours:
+
+        if layout_nouvelle_taille:
+
+            return max(
+                candidats_secours,
+                key=lambda candidat:
+                (
+                    len(
+                        str(
+                            candidat["valeur"]
+                        )
+                    ),
+                    candidat["x"]
+                )
+            )["valeur"]
 
         return max(
             candidats_secours,
@@ -2012,15 +2057,49 @@ def _ocr_gold_pc(
         )
     )
 
+    # Pour le nouveau layout ~1373x781, le premier chiffre de 185.7K
+    # est très proche du bord de l'icône. Les offsets 2/4 permettent
+    # de le conserver. Les autres tailles gardent les offsets historiques.
+    layout_nouvelle_taille = (
+        1350
+        <=
+        w
+        <=
+        1400
+        and
+        740
+        <=
+        h
+        <=
+        820
+    )
+
+    if layout_nouvelle_taille:
+
+        offsets = (
+            2,
+            4,
+            6,
+            8,
+            12,
+            16,
+            20,
+            24
+        )
+
+    else:
+
+        offsets = (
+            8,
+            12,
+            16,
+            20,
+            24
+        )
+
     # Plusieurs offsets : ils doivent tous lire le même montant si
     # le texte est réellement présent.
-    for offset in (
-        8,
-        12,
-        16,
-        20,
-        24
-    ):
+    for offset in offsets:
 
         x1 = max(
             0,
