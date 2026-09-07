@@ -436,118 +436,172 @@ def detecter_lignes(
 def ocr_panneau_troupes(
     image
 ):
+    """
+    OCR du panneau des troupes.
+    La fenêtre a déjà été normalisée en amont.
+    """
 
     h, w = image.shape[:2]
 
-    # Zone contenant les noms et quantités
-    x1 = int(
-        w * 0.39
-    )
-
-    x2 = int(
-        w * 0.94
-    )
-
-    y1 = int(
-        h * 0.10
-    )
-
-    y2 = int(
-        h * 0.72
-    )
+    x1 = int(w * 0.34)
+    x2 = int(w * 0.97)
+    y1 = int(h * 0.08)
+    y2 = int(h * 0.76)
 
     crop = image[
         y1:y2,
         x1:x2
     ]
 
-    crop = cv2.resize(
-        crop,
-        None,
-        fx=3,
-        fy=3,
-        interpolation=cv2.INTER_CUBIC
-    )
-
-    data = pytesseract.image_to_data(
-        crop,
-        config="--psm 6",
-        output_type=pytesseract.Output.DICT
-    )
+    if crop.size == 0:
+        return []
 
     mots = []
 
-    for i, texte in enumerate(
-        data["text"]
+    for scale in (
+        1.0,
+        1.35
     ):
 
-        texte = texte.strip()
+        if scale == 1.0:
 
-        if not texte:
+            travail = crop
 
-            continue
+        else:
 
-        try:
-
-            confiance = float(
-                data["conf"][i]
+            travail = cv2.resize(
+                crop,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_CUBIC
             )
 
-        except ValueError:
+        for psm in (
+            6,
+            11
+        ):
 
-            confiance = 0
+            data = pytesseract.image_to_data(
+                travail,
+                config=f"--psm {psm}",
+                output_type=pytesseract.Output.DICT
+            )
 
-        left = (
-            data["left"][i]
-            /
-            3
-            +
-            x1
-        )
+            for i, texte in enumerate(
+                data["text"]
+            ):
 
-        top = (
-            data["top"][i]
-            /
-            3
-            +
-            y1
-        )
+                texte = texte.strip()
 
-        largeur = (
-            data["width"][i]
-            /
-            3
-        )
+                if not texte:
+                    continue
 
-        hauteur = (
-            data["height"][i]
-            /
-            3
-        )
+                try:
+                    confiance = float(
+                        data["conf"][i]
+                    )
+                except (
+                    ValueError,
+                    TypeError
+                ):
+                    confiance = 0
 
-        centre_y = (
-            top
-            +
-            hauteur / 2
-        )
+                left = (
+                    data["left"][i]
+                    /
+                    scale
+                    +
+                    x1
+                )
 
-        mots.append(
-            {
-                "texte":
-                    texte,
+                top = (
+                    data["top"][i]
+                    /
+                    scale
+                    +
+                    y1
+                )
 
-                "x":
-                    left,
+                largeur = (
+                    data["width"][i]
+                    /
+                    scale
+                )
 
-                "y":
-                    centre_y,
+                hauteur = (
+                    data["height"][i]
+                    /
+                    scale
+                )
 
-                "confiance":
-                    confiance
-            }
-        )
+                mots.append(
+                    {
+                        "texte":
+                            texte,
 
-    return mots
+                        "x":
+                            left,
+
+                        "y":
+                            top + hauteur / 2,
+
+                        "confiance":
+                            confiance
+                    }
+                )
+
+    # Dédupliquer les mêmes tokens produits par les différentes passes.
+    resultat = []
+
+    for mot in mots:
+
+        doublon = False
+
+        for ancien in resultat:
+
+            if (
+                mot["texte"].lower()
+                ==
+                ancien["texte"].lower()
+                and
+                abs(
+                    mot["x"]
+                    -
+                    ancien["x"]
+                )
+                <=
+                18
+                and
+                abs(
+                    mot["y"]
+                    -
+                    ancien["y"]
+                )
+                <=
+                18
+            ):
+
+                if (
+                    mot["confiance"]
+                    >
+                    ancien["confiance"]
+                ):
+
+                    ancien.update(
+                        mot
+                    )
+
+                doublon = True
+                break
+
+        if not doublon:
+            resultat.append(
+                mot
+            )
+
+    return resultat
+
 
 
 # =========================================================
@@ -1060,10 +1114,10 @@ def _trouver_icones_ressources(
     h, w = image.shape[:2]
 
     # La barre est toujours dans la partie droite et basse du panneau.
-    x1 = int(w * 0.40)
-    x2 = int(w * 0.99)
-    y1 = int(h * 0.72)
-    y2 = int(h * 0.90)
+    x1 = int(w * 0.34)
+    x2 = int(w * 0.995)
+    y1 = int(h * 0.68)
+    y2 = int(h * 0.94)
 
     roi = image[y1:y2, x1:x2]
 
@@ -1112,7 +1166,7 @@ def _trouver_icones_ressources(
                 stats[i, cv2.CC_STAT_HEIGHT]
             )
 
-            if width < 7 or height < 7:
+            if width < 5 or height < 5:
                 continue
 
             cx, cy = centers[i]
@@ -2149,6 +2203,46 @@ def isoler_fenetre_hopital(
 # ANALYSER IMAGE
 # =========================================================
 
+
+def normaliser_resolution_ocr(
+    image,
+    largeur_cible=1400
+):
+    """
+    Normalise la résolution de la fenêtre d'hôpital avant OCR.
+    Les petites captures sont agrandies sans changer leur ratio.
+    """
+    if image is None or image.size == 0:
+        return image
+
+    h, w = image.shape[:2]
+
+    if w >= largeur_cible:
+        return image
+
+    ratio = min(
+        largeur_cible / float(w),
+        4.0
+    )
+
+    nouvelle_largeur = int(
+        round(w * ratio)
+    )
+
+    nouvelle_hauteur = int(
+        round(h * ratio)
+    )
+
+    return cv2.resize(
+        image,
+        (
+            nouvelle_largeur,
+            nouvelle_hauteur
+        ),
+        interpolation=cv2.INTER_CUBIC
+    )
+
+
 def analyser_image(
     image_path
 ):
@@ -2168,6 +2262,18 @@ def analyser_image(
     # sur la fenêtre de soins isolée.
     image = isoler_fenetre_hopital(
         image
+    )
+
+    # Toutes les tailles de captures sont ramenées à une résolution
+    # de travail similaire pour améliorer l'OCR des petits screenshots.
+    image = normaliser_resolution_ocr(
+        image,
+        largeur_cible=1400
+    )
+
+    print(
+        f"Résolution OCR : "
+        f"{image.shape[1]}x{image.shape[0]}"
     )
 
     print()
