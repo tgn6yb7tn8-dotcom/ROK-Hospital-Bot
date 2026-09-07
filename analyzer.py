@@ -1,43 +1,40 @@
-import cv2
-import pytesseract
-import numpy as np
+"""ROK Hospital OCR analyzer.
+
+Cleaned runtime analyzer used by the Discord bot.
+It isolates the hospital window first, reads troop lines, classifies T4/T5
+from unit names, and reads visible heal resources from their icons.
+Supports 1 or 2 screenshots and PC/phone layouts.
+"""
+
+import os
 import re
 import sys
+import shutil
 import unicodedata
 from collections import Counter
 
+import cv2
+import numpy as np
+import pytesseract
+
 
 # =========================================================
-# CONFIGURATION
+# TESSERACT CONFIGURATION
 # =========================================================
-
-# Tesseract :
-# - Railway/Linux : utilise automatiquement le binaire installé dans PATH
-# - Windows local : utilise l'installation standard
-# - TESSERACT_CMD : permet de forcer un chemin si nécessaire
-import os
-import shutil
 
 _tesseract_env = os.getenv("TESSERACT_CMD")
 
 if _tesseract_env:
     pytesseract.pytesseract.tesseract_cmd = _tesseract_env
-
 else:
     _tesseract_path = shutil.which("tesseract")
-
     if _tesseract_path:
         pytesseract.pytesseract.tesseract_cmd = _tesseract_path
-
     else:
         pytesseract.pytesseract.tesseract_cmd = (
             r"C:\Program Files\Tesseract-OCR\tesseract.exe"
         )
 
-
-# =========================================================
-# LISTE DES UNITES T4
-# =========================================================
 
 T4_UNITS = [
 
@@ -98,11 +95,6 @@ T4_UNITS = [
     "Baliste",
 ]
 
-
-# =========================================================
-# LISTE DES UNITES T5
-# =========================================================
-
 T5_UNITS = [
 
     # =====================================================
@@ -158,9 +150,17 @@ T5_UNITS = [
     "Trébuchet",
 ]
 
+UNIT_TIERS = {}
+
+UNIT_NAMES_SORTED = sorted(
+    UNIT_TIERS.keys(),
+    key=len,
+    reverse=True
+)
+
 
 # =========================================================
-# NORMALISATION DES TEXTES
+# NORMALISER TEXTE
 # =========================================================
 
 def normaliser_texte(texte):
@@ -199,37 +199,7 @@ def normaliser_texte(texte):
 
 
 # =========================================================
-# CREATION TABLEAU T4 / T5
-# =========================================================
-
-UNIT_TIERS = {}
-
-for nom in T4_UNITS:
-
-    UNIT_TIERS[
-        normaliser_texte(nom)
-    ] = "T4"
-
-
-for nom in T5_UNITS:
-
-    UNIT_TIERS[
-        normaliser_texte(nom)
-    ] = "T5"
-
-
-# Noms normalisés triés du plus long au plus court.
-# Le nom de l'unité, et non le nombre affiché à droite,
-# détermine le T4/T5.
-UNIT_NAMES_SORTED = sorted(
-    UNIT_TIERS.keys(),
-    key=len,
-    reverse=True
-)
-
-
-# =========================================================
-# PREPARATION D'UNE ZONE
+# PREPARER CROP
 # =========================================================
 
 def preparer_crop(
@@ -298,7 +268,7 @@ def preparer_crop(
 
 
 # =========================================================
-# DETECTION DES LIGNES DE TROUPES
+# DETECTER LIGNES
 # =========================================================
 
 def detecter_lignes(
@@ -446,7 +416,7 @@ def detecter_lignes(
 
 
 # =========================================================
-# OCR DU PANNEAU DES TROUPES
+# OCR PANNEAU TROUPES
 # =========================================================
 
 def ocr_panneau_troupes(
@@ -567,7 +537,7 @@ def ocr_panneau_troupes(
 
 
 # =========================================================
-# DETECTION DES LIGNES PAR OCR (FALLBACK)
+# DETECTER LIGNES DEPUIS OCR
 # =========================================================
 
 def detecter_lignes_depuis_ocr(
@@ -641,7 +611,7 @@ def detecter_lignes_depuis_ocr(
 
 
 # =========================================================
-# RECHERCHE DU NOM DE L'UNITE ET DU TIER
+# TROUVER UNITE
 # =========================================================
 
 def trouver_unite(
@@ -673,6 +643,10 @@ def trouver_unite(
     return None, None
 
 
+# =========================================================
+# TROUVER TIER
+# =========================================================
+
 def trouver_tier(
     mots
 ):
@@ -685,7 +659,7 @@ def trouver_tier(
 
 
 # =========================================================
-# RECHERCHE DU NOMBRE
+# EXTRAIRE CANDIDATS NUMERIQUES
 # =========================================================
 
 def extraire_candidats_numeriques(
@@ -752,6 +726,10 @@ def extraire_candidats_numeriques(
 
     return candidats
 
+
+# =========================================================
+# TROUVER NOMBRE
+# =========================================================
 
 def trouver_nombre(
     mots,
@@ -903,7 +881,7 @@ def trouver_nombre(
 
 
 # =========================================================
-# ANALYSE D'UNE LIGNE
+# ANALYSER LIGNE
 # =========================================================
 
 def analyser_ligne(
@@ -944,7 +922,7 @@ def analyser_ligne(
 
 
 # =========================================================
-# CONVERSION RESSOURCE
+# CONVERTIR RESSOURCE
 # =========================================================
 
 def convertir_ressource(
@@ -1008,9 +986,8 @@ def convertir_ressource(
     )
 
 
-
 # =========================================================
-# RESSOURCES
+# ANALYSER TEXTE RESSOURCE TOKEN
 # =========================================================
 
 def analyser_texte_ressource_token(
@@ -1045,571 +1022,8 @@ def analyser_texte_ressource_token(
     )
 
 
-def extraire_valeurs_barre_ressources(
-    image
-):
-    """
-    Lecture robuste de la barre Food/Wood/Stone/Gold sur PC et téléphone.
-
-    Layout téléphone observé :
-        2.1K  1.6K  144
-        -> Wood / Stone / Gold
-
-    Layout PC observé :
-        33.1M  10.4M  17.7M  2.2M
-        -> Food / Wood / Stone / Gold
-    """
-
-    h, w = image.shape[:2]
-
-    # ---------------------------------------------------------
-    # PASSAGE 1 : OCR de la barre entière
-    # ---------------------------------------------------------
-    #
-    # La zone verticale est volontairement étroite pour exclure
-    # le timer de soin situé juste en dessous.
-    # ---------------------------------------------------------
-
-    x1 = int(
-        w * 0.25
-    )
-
-    x2 = int(
-        w * 0.99
-    )
-
-    y1 = int(
-        h * 0.70
-    )
-
-    y2 = int(
-        h * 0.86
-    )
-
-    crop = image[
-        y1:y2,
-        x1:x2
-    ]
-
-    if crop.size == 0:
-        return []
-
-    candidats_sequences = []
-
-    for scale in [
-        4,
-        6,
-        8
-    ]:
-
-        agrandi = cv2.resize(
-            crop,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_CUBIC
-        )
-
-        variantes = [
-            agrandi,
-            cv2.cvtColor(
-                agrandi,
-                cv2.COLOR_BGR2GRAY
-            )
-        ]
-
-        for variante in variantes:
-
-            texte = pytesseract.image_to_string(
-                variante,
-                config=(
-                    "--psm 7 "
-                    "-c tessedit_char_whitelist="
-                    "0123456789.KMB,"
-                )
-            )
-
-            texte = re.sub(
-                r"\s+",
-                " ",
-                texte.upper()
-            ).strip()
-
-            if not texte:
-                continue
-
-            # -------------------------------------------------
-            # On récupère les montants AVEC suffixe d'abord.
-            # C'est le format normal pour Food/Wood/Stone.
-            # -------------------------------------------------
-
-            suffix_matches = list(
-                re.finditer(
-                    r"\d+(?:[.,]\d+)?\s*[KMB]",
-                    texte
-                )
-            )
-
-            sequence = []
-
-            for match in suffix_matches:
-
-                valeur = convertir_ressource(
-                    match.group(0)
-                )
-
-                if valeur is not None:
-                    sequence.append(
-                        valeur
-                    )
-
-            # -------------------------------------------------
-            # Gold peut être affiché sans suffixe :
-            # téléphone -> 144.
-            #
-            # On cherche UNIQUEMENT un nombre non-suffixé situé
-            # après le dernier montant suffixé, et proche de celui-ci.
-            # Cela évite les faux nombres comme "5" ou "7" issus
-            # du bouton/timer.
-            # -------------------------------------------------
-
-            if suffix_matches:
-
-                fin_dernier_suffixe = (
-                    suffix_matches[-1].end()
-                )
-
-                apres = texte[
-                    fin_dernier_suffixe:
-                ]
-
-                # Premier nombre court après le dernier suffixe.
-                # On limite à 3 chiffres pour le format Gold courant.
-                match_gold = re.search(
-                    r"^[\s,._-]*(\d{1,3})(?:\s|$)",
-                    apres
-                )
-
-                if match_gold:
-
-                    gold = int(
-                        match_gold.group(1)
-                    )
-
-                    sequence.append(
-                        gold
-                    )
-
-            # -------------------------------------------------
-            # Cas où l'OCR a reconnu directement 3 ou 4 montants.
-            # -------------------------------------------------
-
-            if len(sequence) in (
-                3,
-                4
-            ):
-
-                candidats_sequences.append(
-                    sequence
-                )
-
-    # ---------------------------------------------------------
-    # Choix de la séquence la plus cohérente.
-    # ---------------------------------------------------------
-
-    if candidats_sequences:
-
-        # On privilégie les séquences les plus longues et
-        # les plus répétées par les différentes passes OCR.
-        compte = {}
-
-        for sequence in candidats_sequences:
-
-            cle = tuple(
-                sequence
-            )
-
-            compte[cle] = (
-                compte.get(
-                    cle,
-                    0
-                )
-                +
-                1
-            )
-
-        meilleure = max(
-            compte.items(),
-            key=lambda item: (
-                item[1],
-                len(item[0])
-            )
-        )[0]
-
-        return [
-            (
-                index,
-                valeur
-            )
-            for index, valeur in enumerate(
-                meilleure
-            )
-        ]
-
-    # ---------------------------------------------------------
-    # PASSAGE 2 : fallback OCR dynamique
-    # ---------------------------------------------------------
-
-    x1 = int(
-        w * 0.25
-    )
-
-    x2 = int(
-        w * 0.99
-    )
-
-    y1 = int(
-        h * 0.64
-    )
-
-    y2 = int(
-        h * 0.88
-    )
-
-    crop = image[
-        y1:y2,
-        x1:x2
-    ]
-
-    if crop.size == 0:
-        return []
-
-    essais = []
-
-    for scale in [
-        4,
-        6,
-        8
-    ]:
-
-        agrandi = cv2.resize(
-            crop,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_CUBIC
-        )
-
-        gray = cv2.cvtColor(
-            agrandi,
-            cv2.COLOR_BGR2GRAY
-        )
-
-        essais.append(
-            (
-                gray,
-                scale
-            )
-        )
-
-        for seuil in [
-            120,
-            150,
-            180
-        ]:
-
-            _, binary = cv2.threshold(
-                gray,
-                seuil,
-                255,
-                cv2.THRESH_BINARY
-            )
-
-            essais.append(
-                (
-                    binary,
-                    scale
-                )
-            )
-
-    detections = []
-
-    for image_ocr, scale in essais:
-
-        data = pytesseract.image_to_data(
-            image_ocr,
-            config=(
-                "--psm 6 "
-                "-c tessedit_char_whitelist="
-                "0123456789.KMB,"
-            ),
-            output_type=pytesseract.Output.DICT
-        )
-
-        for i, brut in enumerate(
-            data["text"]
-        ):
-
-            brut = brut.strip()
-
-            if not brut:
-                continue
-
-            try:
-                confiance = float(
-                    data["conf"][i]
-                )
-            except (
-                ValueError,
-                TypeError
-            ):
-                confiance = 0
-
-            if confiance < 15:
-                continue
-
-            propre = (
-                brut.upper()
-                .replace(",", ".")
-                .replace(" ", "")
-            )
-
-            valeur = convertir_ressource(
-                propre
-            )
-
-            if valeur is None:
-                continue
-
-            a_suffixe = propre.endswith(
-                (
-                    "K",
-                    "M",
-                    "B"
-                )
-            )
-
-            # Les valeurs sans suffixe ne sont acceptées que
-            # si elles sont plausibles pour Gold et dans la partie
-            # droite de la barre.
-            x = (
-                data["left"][i] / scale
-                +
-                x1
-            )
-
-            if (
-                not a_suffixe
-                and
-                not (
-                    valeur <= 999
-                    and
-                    x / w >= 0.70
-                )
-            ):
-                continue
-
-            detections.append(
-                (
-                    x,
-                    valeur
-                )
-            )
-
-    if not detections:
-        return []
-
-    # Regrouper les valeurs identiques proches.
-    detections = sorted(
-        detections,
-        key=lambda item:
-        item[0]
-    )
-
-    groupes = []
-
-    for x, valeur in detections:
-
-        trouve = False
-
-        for groupe in groupes:
-
-            if (
-                abs(
-                    x
-                    -
-                    groupe["x"]
-                )
-                <=
-                55
-                and
-                valeur
-                ==
-                groupe["valeur"]
-            ):
-
-                groupe["votes"] += 1
-                groupe["xs"].append(
-                    x
-                )
-
-                groupe["x"] = (
-                    sum(
-                        groupe["xs"]
-                    )
-                    /
-                    len(
-                        groupe["xs"]
-                    )
-                )
-
-                trouve = True
-                break
-
-        if not trouve:
-
-            groupes.append(
-                {
-                    "x":
-                        x,
-                    "xs":
-                        [x],
-                    "valeur":
-                        valeur,
-                    "votes":
-                        1
-                }
-            )
-
-    groupes = sorted(
-        groupes,
-        key=lambda groupe:
-        groupe["x"]
-    )
-
-    # Ne conserver que des valeurs soutenues.
-    groupes_soutenus = [
-        groupe
-        for groupe in groupes
-        if groupe["votes"] >= 2
-    ]
-
-    if groupes_soutenus:
-
-        groupes = groupes_soutenus
-
-    return [
-        (
-            groupe["x"],
-            groupe["valeur"]
-        )
-        for groupe in groupes
-    ]
-
-
-def ressources_visibles(
-    image
-):
-    """
-    Une barre de ressources est considérée présente si l'OCR
-    trouve au moins deux montants cohérents dans sa zone.
-
-    Le timer de soins (00:42:51, etc.) ne passe pas ce filtre.
-    """
-
-    valeurs = extraire_valeurs_barre_ressources(
-        image
-    )
-
-    return len(valeurs) >= 2
-
-
-def lire_ressource(
-    image,
-    x1,
-    y1,
-    x2,
-    y2
-):
-    """
-    Fonction conservée pour compatibilité.
-    """
-
-    crop = preparer_crop(
-        image,
-        x1,
-        y1,
-        x2,
-        y2,
-        scale=7
-    )
-
-    if crop is None:
-        return None
-
-    gray = cv2.cvtColor(
-        crop,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    valeurs = []
-
-    essais = [
-        gray
-    ]
-
-    for seuil in [
-        120,
-        140,
-        160,
-        180
-    ]:
-
-        _, binary = cv2.threshold(
-            gray,
-            seuil,
-            255,
-            cv2.THRESH_BINARY
-        )
-
-        essais.append(
-            binary
-        )
-
-    for image_ocr in essais:
-
-        texte = pytesseract.image_to_string(
-            image_ocr,
-            config=(
-                "--psm 7 "
-                "-c tessedit_char_whitelist="
-                "0123456789.KMB"
-            )
-        )
-
-        valeur = convertir_ressource(
-            texte
-        )
-
-        if valeur is not None:
-            valeurs.append(
-                valeur
-            )
-
-    if not valeurs:
-        return None
-
-    compteur = Counter(
-        valeurs
-    )
-
-    return compteur.most_common(
-        1
-    )[0][0]
-
-
 # =========================================================
-# ANALYSE DES RESSOURCES
+#  TROUVER ICONES RESSOURCES
 # =========================================================
 
 def _trouver_icones_ressources(
@@ -1984,6 +1398,10 @@ def _trouver_icones_ressources(
     return cleaned
 
 
+# =========================================================
+#  LIRE MONTANT A COTE ICONE
+# =========================================================
+
 def _lire_montant_a_cote_icone(
     image,
     icon,
@@ -2075,9 +1493,10 @@ def _lire_montant_a_cote_icone(
     candidats = []
 
     for scale in (
-        2,
-        3,
-        4
+        6,
+        8,
+        10,
+        12
     ):
 
         agrandi = cv2.resize(
@@ -2085,7 +1504,7 @@ def _lire_montant_a_cote_icone(
             None,
             fx=scale,
             fy=scale,
-            interpolation=cv2.INTER_CUBIC
+            interpolation=cv2.INTER_LANCZOS4
         )
 
         gray = cv2.cvtColor(
@@ -2226,6 +1645,10 @@ def _lire_montant_a_cote_icone(
     )[0][0]
 
 
+# =========================================================
+# ANALYSER RESSOURCES
+# =========================================================
+
 def analyser_ressources(
     image
 ):
@@ -2349,9 +1772,8 @@ def analyser_ressources(
 
 
 # =========================================================
-# ANALYSE D'UNE IMAGE
+# ISOLER FENETRE HOPITAL
 # =========================================================
-
 
 def isoler_fenetre_hopital(
     image
@@ -2709,6 +2131,9 @@ def isoler_fenetre_hopital(
     return crop
 
 
+# =========================================================
+# ANALYSER IMAGE
+# =========================================================
 
 def analyser_image(
     image_path
@@ -2885,7 +2310,7 @@ def analyser_image(
 
 
 # =========================================================
-# DOUBLON
+# EST DOUBLON
 # =========================================================
 
 def est_doublon(
@@ -2917,7 +2342,7 @@ def est_doublon(
 
 
 # =========================================================
-# ANALYSE PLUSIEURS IMAGES
+# ANALYSER PLUSIEURS IMAGES
 # =========================================================
 
 def analyser_plusieurs_images(
@@ -3114,73 +2539,17 @@ def analyser_plusieurs_images(
             or_
     }
 
-
-# =========================================================
-# PROGRAMME PRINCIPAL
-# =========================================================
-
 if __name__ == "__main__":
-
-    images = sys.argv[1:]
-
-    if not images:
-
-        images = [
-            "test_hopital1.png"
-        ]
-
-    resultat = analyser_plusieurs_images(
-        images
-    )
-
+    images = sys.argv[1:] or ["test_hopital1.png"]
+    resultat = analyser_plusieurs_images(images)
     print()
-    print()
-
-    print(
-        "========================================"
-    )
-
-    print(
-        "           RESULTAT FINAL"
-    )
-
-    print(
-        "========================================"
-    )
-
-    print(
-        f"T4             : "
-        f"{resultat['t4']}"
-    )
-
-    print(
-        f"T5             : "
-        f"{resultat['t5']}"
-    )
-
-    print(
-        f"Total troupes  : "
-        f"{resultat['total']}"
-    )
-
-    print()
-
-    print(
-        f"Nourriture     : "
-        f"{resultat['nourriture']}"
-    )
-
-    print(
-        f"Bois           : "
-        f"{resultat['bois']}"
-    )
-
-    print(
-        f"Pierre         : "
-        f"{resultat['pierre']}"
-    )
-
-    print(
-        f"Or             : "
-        f"{resultat['or']}"
-    )
+    print("=" * 40)
+    print("RESULTAT FINAL")
+    print("=" * 40)
+    print(f"T4            : {resultat['t4']}")
+    print(f"T5            : {resultat['t5']}")
+    print(f"Total troupes : {resultat['total']}")
+    print(f"Nourriture    : {resultat['nourriture']}")
+    print(f"Bois          : {resultat['bois']}")
+    print(f"Pierre        : {resultat['pierre']}")
+    print(f"Or            : {resultat['or']}")
