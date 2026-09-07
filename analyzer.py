@@ -152,11 +152,7 @@ T5_UNITS = [
 
 UNIT_TIERS = {}
 
-UNIT_NAMES_SORTED = sorted(
-    UNIT_TIERS.keys(),
-    key=len,
-    reverse=True
-)
+UNIT_NAMES_SORTED = []
 
 
 # =========================================================
@@ -196,6 +192,24 @@ def normaliser_texte(texte):
     )
 
     return texte.strip()
+
+
+# Construire la table T4/T5 après la définition de normaliser_texte().
+for nom in T4_UNITS:
+    UNIT_TIERS[
+        normaliser_texte(nom)
+    ] = "T4"
+
+for nom in T5_UNITS:
+    UNIT_TIERS[
+        normaliser_texte(nom)
+    ] = "T5"
+
+UNIT_NAMES_SORTED = sorted(
+    UNIT_TIERS.keys(),
+    key=len,
+    reverse=True
+)
 
 
 # =========================================================
