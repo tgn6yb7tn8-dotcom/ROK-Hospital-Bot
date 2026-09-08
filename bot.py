@@ -797,10 +797,23 @@ def commande_dans_bon_salon():
 def _membre_admin_dans_un_serveur(user):
     """
     En DM, Discord ne fournit pas les rôles directement à ctx.author.
-    On vérifie donc si l'utilisateur possède le rôle Server • Admin
-    (ou la permission Administrateur) dans au moins un serveur partagé
-    avec le bot.
+
+    Le compte administrateur configuré par ERROR_NOTIFICATION_USER_ID
+    est autorisé directement en DM. Cela évite de dépendre des rôles
+    Discord, qui ne sont pas disponibles dans un message privé.
+
+    Pour les autres utilisateurs, on conserve également la vérification
+    du rôle Server • Admin (ou de la permission Administrateur) dans
+    un serveur partagé avec le bot.
     """
+
+    # Administrateur principal autorisé en DM.
+    if user.id == ERROR_NOTIFICATION_USER_ID:
+        return True
+
+    # Sécurité supplémentaire : un autre utilisateur ne peut être
+    # autorisé en DM que s'il possède réellement le rôle admin ou
+    # la permission Administrateur sur un serveur partagé.
     for guild in bot.guilds:
         membre = guild.get_member(user.id)
 
