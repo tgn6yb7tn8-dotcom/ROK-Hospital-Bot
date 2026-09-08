@@ -30,7 +30,7 @@ COMMANDS_CHANNEL_ID = RESULT_CHANNEL_ID
 # dans le salon de vérification, même après traitement ou erreur.
 # Remettre cette valeur à True plus tard si on veut réactiver
 # la suppression automatique.
-DELETE_SOURCE_MESSAGES = False
+DELETE_SOURCE_MESSAGES = True
 
 # Nom du rôle Discord autorisé à utiliser !delete et !update.
 # Les membres avec la permission Administrateur sont aussi autorisés.
