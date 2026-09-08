@@ -900,25 +900,25 @@ async def envoyer_dm_succes_admin(
             f"🟪 **T4:** {t4:,}\n"
             f"🟧 **T5:** {t5:,}\n"
             f"⚔️ **Total troops:** {total:,}\n\n"
-            (
+            + (
                 f"🌾 **Food:** {nourriture:,}\n"
                 if nourriture is not None
                 else
                 "🌾 **Food:** —\n"
             )
-            (
+            + (
                 f"🪵 **Wood:** {bois:,}\n"
                 if bois is not None
                 else
                 "🪵 **Wood:** —\n"
             )
-            (
+            + (
                 f"🪨 **Stone:** {pierre:,}\n"
                 if pierre is not None
                 else
                 "🪨 **Stone:** —\n"
             )
-            (
+            + (
                 f"🪙 **Gold:** {or_:,}"
                 if or_ is not None
                 else
