@@ -53,6 +53,7 @@ T4_UNITS = [
     "Samurai",
     "Berserker",
     "Argyraspides",
+    "Heavy Swordsman",
 
     "Crossbowman",
     "Longbowman",
@@ -758,6 +759,13 @@ UNIT_TRANSLATION_ALIASES = {
     "ritter": "knight",
     "armbrustschuetze": "crossbowman",
 
+    # Polish - formes visibles dans les captures de Rise of Kingdoms.
+    "elitarny maryannu": "elite maryannu",
+    "elitarny maryannu": "elite maryannu",
+    "ciezkozbrojny szermierz": "heavy swordsman",
+    "ciezkozbrojny szermierz": "heavy swordsman",
+    "rycerz": "knight",
+
     # Vietnamese - formes visibles dans les captures de Rise of Kingdoms.
     # Elles sont reconnues DIRECTEMENT, sans passer par Google Translate.
     "kiem si guom dai": "long swordsman",
@@ -958,12 +966,57 @@ def trouver_unite_vietnamien(mots):
     return None, None
 
 
+def trouver_unite_polonais(mots):
+    """Reconnaissance directe des noms polonais visibles sur les captures.
+
+    Cette passe arrive avant la reconnaissance générique afin d'éviter
+    qu'un mot commun comme ``maryannu`` fasse classer ``Elitarny maryannu``
+    en T4 au lieu de T5.
+    """
+
+    tokens = [
+        normaliser_texte(mot["texte"])
+        for mot in mots
+        if normaliser_texte(mot["texte"])
+    ]
+
+    ensemble = set(tokens)
+
+    # T5
+    if "elitarny" in ensemble and any(
+        "maryannu" in token for token in ensemble
+    ):
+        return "elite maryannu", "T5"
+
+    # T4
+    if (
+        any("ciezkozbrojny" in token for token in ensemble)
+        and "szermierz" in ensemble
+    ):
+        return "heavy swordsman", "T4"
+
+    if "rycerz" in ensemble:
+        return "knight", "T4"
+
+    return None, None
+
+
 def trouver_unite(
     mots
 ):
 
     if not mots:
         return None, None
+
+    # =====================================================
+    # 0. RECONNAISSANCE POLONAISE DIRECTE
+    # =====================================================
+    # Prioritaire sur la recherche générique : ``Elitarny maryannu``
+    # contient le mot ``maryannu``, qui ne doit surtout pas être
+    # interprété comme l'unité T4 ``Maryannu``.
+    nom_pl, tier_pl = trouver_unite_polonais(mots)
+    if tier_pl is not None:
+        return nom_pl, tier_pl
 
     # =====================================================
     # 1. RECONNAISSANCE DIRECTE / HISTORIQUE
