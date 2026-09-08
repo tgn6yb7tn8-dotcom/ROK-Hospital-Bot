@@ -36,6 +36,10 @@ DELETE_SOURCE_MESSAGES = False
 # Les membres avec la permission Administrateur sont aussi autorisés.
 ADMIN_ROLE_NAME = "Server • Admin"
 
+# Discord User ID qui recevra également un DM lorsqu'une
+# vérification échoue ou rencontre une erreur.
+ERROR_NOTIFICATION_USER_ID = 925122125147291719
+
 IMAGE_EXTENSIONS = {
     ".png",
     ".jpg",
@@ -763,41 +767,96 @@ async def envoyer_dm_erreur(
     description,
 ):
     """
-    Essaie d'envoyer un message privé à l'utilisateur.
+    Envoie un message privé :
+    - au joueur concerné ;
+    - à l'administrateur configuré.
 
-    Si les MP sont fermés, cela ne fait pas échouer la vérification.
-    L'erreur principale reste visible dans le salon de résultats.
+    Si les MP sont fermés ou impossibles à envoyer, cela ne fait pas
+    échouer la vérification.
     """
 
-    try:
+    message_joueur = (
+        f"❌ **ROK Hospital Checker — {titre}**\n\n"
+        f"{description}"
+    )
 
+    # ---------------------------------------------------------
+    # DM AU JOUEUR
+    # ---------------------------------------------------------
+    try:
         await user.send(
-            f"❌ **ROK Hospital Checker — {titre}**\n\n"
-            f"{description}"
+            message_joueur
         )
 
         print(
-            f"📩 DM envoyé à {user}."
+            f"📩 DM erreur envoyé au joueur {user}."
         )
 
-        return True
-
     except discord.Forbidden:
-
         print(
             f"⚠️ Impossible d'envoyer un DM à {user} "
             "(MP fermés ou non autorisés)."
         )
 
-        return False
-
     except discord.HTTPException as e:
-
         print(
             f"⚠️ Erreur Discord lors du DM à {user}: {e}"
         )
 
-        return False
+    # ---------------------------------------------------------
+    # DM A L'ADMIN
+    # ---------------------------------------------------------
+    try:
+        admin_user = bot.get_user(
+            ERROR_NOTIFICATION_USER_ID
+        )
+
+        if admin_user is None:
+            admin_user = await bot.fetch_user(
+                ERROR_NOTIFICATION_USER_ID
+            )
+
+        # Si l'admin est lui-même le joueur, éviter un doublon.
+        if admin_user.id == user.id:
+            print(
+                "ℹ️ L'admin est le joueur concerné : "
+                "pas de deuxième DM."
+            )
+            return True
+
+        message_admin = (
+            "⚠️ **ROK Hospital Checker — Verification error**\n\n"
+            f"👤 **Player:** {user}\n"
+            f"🆔 **Discord User ID:** `{user.id}`\n"
+            f"📌 **Reason:** {titre}\n\n"
+            f"{description}"
+        )
+
+        await admin_user.send(
+            message_admin
+        )
+
+        print(
+            f"📩 DM erreur envoyé à l'admin {admin_user}."
+        )
+
+    except discord.Forbidden:
+        print(
+            "⚠️ Impossible d'envoyer le DM à l'admin "
+            "(MP fermés ou non autorisés)."
+        )
+
+    except discord.HTTPException as e:
+        print(
+            f"⚠️ Erreur Discord lors du DM à l'admin: {e}"
+        )
+
+    except Exception as e:
+        print(
+            f"⚠️ Impossible de récupérer/notifier l'admin: {e}"
+        )
+
+    return True
 
 
 # =========================================================
@@ -896,6 +955,11 @@ async def on_ready():
     print(
         f"Rôle admin         : "
         f"{ADMIN_ROLE_NAME}"
+    )
+
+    print(
+        f"Admin notifications: "
+        f"{ERROR_NOTIFICATION_USER_ID}"
     )
 
     print(
