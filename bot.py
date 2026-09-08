@@ -19,8 +19,8 @@ from analyzer import analyser_plusieurs_images
 
 TOKEN = os.getenv("DISCORD_TOKEN", "TON_TOKEN_ICI")
 
-VERIFICATION_CHANNEL_ID = 1544663283653546024
-RESULT_CHANNEL_ID = 1544744659102736474
+VERIFICATION_CHANNEL_ID = 1544613786952925326
+RESULT_CHANNEL_ID = 1383758654901194875
 
 # Les commandes de gestion seront utilisables uniquement
 # dans le salon des résultats.
@@ -857,6 +857,105 @@ async def envoyer_dm_erreur(
         )
 
     return True
+
+
+async def envoyer_dm_succes_admin(
+    player,
+    player_id,
+    t4,
+    t5,
+    total,
+    nourriture,
+    bois,
+    pierre,
+    or_,
+    image_paths,
+):
+    """
+    Envoie à l'administrateur un DM pour chaque vérification réussie,
+    avec les statistiques reconnues et les captures originales.
+    """
+
+    try:
+        admin_user = bot.get_user(
+            ERROR_NOTIFICATION_USER_ID
+        )
+
+        if admin_user is None:
+            admin_user = await bot.fetch_user(
+                ERROR_NOTIFICATION_USER_ID
+            )
+
+        # Préparer de nouveaux discord.File : les objets utilisés
+        # pour le salon des résultats ne peuvent pas être réutilisés.
+        fichiers_admin = await envoyer_images_resultat(
+            image_paths
+        )
+
+        message_admin = (
+            "✅ **ROK Hospital Checker — Verification completed**\n\n"
+            f"👤 **Player:** {player}\n"
+            f"🆔 **Discord User ID:** `{player.id}`\n"
+            f"🎮 **Player ID:** `{player_id}`\n\n"
+            f"🟪 **T4:** {t4:,}\n"
+            f"🟧 **T5:** {t5:,}\n"
+            f"⚔️ **Total troops:** {total:,}\n\n"
+            (
+                f"🌾 **Food:** {nourriture:,}\n"
+                if nourriture is not None
+                else
+                "🌾 **Food:** —\n"
+            )
+            (
+                f"🪵 **Wood:** {bois:,}\n"
+                if bois is not None
+                else
+                "🪵 **Wood:** —\n"
+            )
+            (
+                f"🪨 **Stone:** {pierre:,}\n"
+                if pierre is not None
+                else
+                "🪨 **Stone:** —\n"
+            )
+            (
+                f"🪙 **Gold:** {or_:,}"
+                if or_ is not None
+                else
+                "🪙 **Gold:** —"
+            )
+        )
+
+        await admin_user.send(
+            content=message_admin,
+            files=fichiers_admin,
+        )
+
+        print(
+            f"📩 DM succès envoyé à l'admin {admin_user} "
+            f"pour le Player ID {player_id}."
+        )
+
+        return True
+
+    except discord.Forbidden:
+        print(
+            "⚠️ Impossible d'envoyer le DM de succès à l'admin "
+            "(MP fermés ou non autorisés)."
+        )
+        return False
+
+    except discord.HTTPException as e:
+        print(
+            f"⚠️ Erreur Discord lors du DM de succès à l'admin: {e}"
+        )
+        return False
+
+    except Exception as e:
+        print(
+            f"⚠️ Impossible d'envoyer le DM de succès à l'admin: {e}"
+        )
+        return False
 
 
 # =========================================================
@@ -1992,6 +2091,23 @@ async def on_message(
                 print(
                     "✅ Vérification envoyée "
                     "dans le salon de résultats."
+                )
+
+                # -------------------------------------------------
+                # NOTIFICATION PRIVEE DE SUCCES A L'ADMIN
+                # -------------------------------------------------
+
+                await envoyer_dm_succes_admin(
+                    message.author,
+                    player_id,
+                    t4,
+                    t5,
+                    total,
+                    nourriture,
+                    bois,
+                    pierre,
+                    or_,
+                    fichiers_temporaires,
                 )
 
                 # -------------------------------------------------
