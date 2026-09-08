@@ -13,17 +13,13 @@ import shutil
 import unicodedata
 from collections import Counter
 
-# Traduction optionnelle des noms d'unités.
-# Le bot peut fonctionner sans le module : dans ce cas, les alias locaux
-# continuent de couvrir les langues déjà rencontrées.
-try:
-    from deep_translator import GoogleTranslator
-except Exception:
-    GoogleTranslator = None
-
-
 import cv2
 import numpy as np
+
+try:
+    from deep_translator import GoogleTranslator
+except ImportError:
+    GoogleTranslator = None
 import pytesseract
 
 
@@ -219,175 +215,6 @@ UNIT_NAMES_SORTED = sorted(
     key=len,
     reverse=True
 )
-
-
-# =========================================================
-# TRADUCTION DES NOMS D'UNITES
-# =========================================================
-
-# Quelques alias de base servent de filet de sécurité lorsque le service
-# de traduction n'est pas disponible. On ne recopie pas la liste des unités :
-# les noms anglais existants dans UNIT_TIERS restent la seule référence T4/T5.
-UNIT_TRANSLATION_ALIASES = {
-    # Vietnamese
-    "kiemsiguomdai": "long swordsman",
-    "hiepsiteuton": "teutonic knight",
-    "linhbanno": "crossbowman",
-    "thuongsi": "sergeant",
-    "maryannudelite": "elite maryannu",
-
-    # French OCR
-    "arbaletrier": "crossbowman",
-    "janissaire": "janissary",
-    "mamelouk": "mamluk",
-
-    # Spanish
-    "espadachin": "swordsman",
-    "caballero": "knight",
-    "ballestero": "crossbowman",
-    "jenizaro": "janissary",
-
-    # German
-    "schwertkaempfer": "swordsman",
-    "schwertkämpfer": "swordsman",
-    "ritter": "knight",
-    "armbrustschuetze": "crossbowman",
-    "armbrustschütze": "crossbowman",
-}
-
-UNIT_TRANSLATION_CACHE = {}
-
-
-def normaliser_nom_unite_multilangue(
-    texte
-):
-    """
-    Convertit un petit texte OCRisé contenant un nom d'unité vers une
-    forme anglaise comparable à UNIT_TIERS.
-
-    Étapes :
-      1. normalisation locale ;
-      2. alias connu ;
-      3. recherche directe dans les noms anglais ;
-      4. traduction automatique du petit texte si disponible ;
-      5. cache du résultat.
-    """
-
-    if not texte:
-        return ""
-
-    original = str(
-        texte
-    ).strip()
-
-    cle = normaliser_texte(
-        original
-    )
-
-    if not cle:
-        return ""
-
-    if cle in UNIT_TRANSLATION_CACHE:
-        return UNIT_TRANSLATION_CACHE[
-            cle
-        ]
-
-    # Déjà anglais / nom déjà connu.
-    if cle in UNIT_TIERS:
-
-        UNIT_TRANSLATION_CACHE[
-            cle
-        ] = cle
-
-        return cle
-
-    # Alias local. On teste aussi une version compacte sans espaces,
-    # car l'OCR peut découper différemment les mots.
-    cle_compacte = cle.replace(
-        " ",
-        ""
-    )
-
-    alias = UNIT_TRANSLATION_ALIASES.get(
-        cle
-    )
-
-    if alias is None:
-        alias = UNIT_TRANSLATION_ALIASES.get(
-            cle_compacte
-        )
-
-    if alias is not None:
-
-        traduit = normaliser_texte(
-            alias
-        )
-
-        UNIT_TRANSLATION_CACHE[
-            cle
-        ] = traduit
-
-        return traduit
-
-    # Recherche approximative locale avant le réseau.
-    for anglais in UNIT_NAMES_SORTED:
-
-        if (
-            cle == anglais
-            or
-            cle in anglais
-            or
-            anglais in cle
-        ):
-
-            UNIT_TRANSLATION_CACHE[
-                cle
-            ] = anglais
-
-            return anglais
-
-    # Traduction automatique uniquement sur le petit nom d'unité.
-    # Elle est mise en cache afin qu'une même unité ne soit normalement
-    # traduite qu'une seule fois pendant la durée du processus.
-    if GoogleTranslator is not None:
-
-        try:
-
-            translated = (
-                GoogleTranslator(
-                    source="auto",
-                    target="en"
-                )
-                .translate(
-                    original
-                )
-            )
-
-            translated_normalise = normaliser_texte(
-                translated
-            )
-
-            if translated_normalise:
-
-                UNIT_TRANSLATION_CACHE[
-                    cle
-                ] = translated_normalise
-
-                return translated_normalise
-
-        except Exception as e:
-
-            print(
-                "⚠️ Traduction automatique unité "
-                f"indisponible : {e}"
-            )
-
-    UNIT_TRANSLATION_CACHE[
-        cle
-    ] = cle
-
-    return cle
-
 
 
 # =========================================================
@@ -882,6 +709,181 @@ def detecter_lignes_depuis_ocr(
 # TROUVER UNITE
 # =========================================================
 
+
+# =========================================================
+# TRADUCTION DES NOMS D'UNITES
+# =========================================================
+
+# La liste anglaise existante reste la référence T3/T4/T5.
+# Cette couche ne sert QUE lorsque le nom OCR n'est pas déjà reconnu.
+#
+# On ne traduit jamais la quantité : les nombres sont retirés avant
+# l'appel au traducteur.
+UNIT_TRANSLATION_ALIASES = {
+    # Vietnamese
+    "kiemsiguomdai": "long swordsman",
+    "hiepsiteuton": "teutonic knight",
+    "linhbanno": "crossbowman",
+    "thuongsi": "sergeant",
+    "maryannudelite": "elite maryannu",
+
+    # Quelques variantes OCR fréquentes.
+    "kiemsiguomdai": "long swordsman",
+    "hiepsiteuton": "teutonic knight",
+    "linhbanno": "crossbowman",
+    "thuongsi": "sergeant",
+
+    # Spanish
+    "espadachin": "swordsman",
+    "caballero": "knight",
+    "ballestero": "crossbowman",
+    "jenizaro": "janissary",
+
+    # German
+    "schwertkaempfer": "swordsman",
+    "ritter": "knight",
+    "armbrustschuetze": "crossbowman",
+}
+
+UNIT_TRANSLATION_CACHE = {}
+
+
+def _texte_nom_sans_nombres(
+    texte
+):
+    """
+    Retire les quantités et caractères de séparation avant traduction.
+    Exemple :
+        'Kiếm sĩ gươm dài 1225'
+        -> 'Kiếm sĩ gươm dài'
+    """
+
+    if not texte:
+        return ""
+
+    texte = re.sub(
+        r"\d[\d\s.,]*",
+        " ",
+        str(texte)
+    )
+
+    texte = re.sub(
+        r"[^A-Za-zÀ-ÿ\u0100-\u024F\u1E00-\u1EFF\s'-]",
+        " ",
+        texte
+    )
+
+    texte = re.sub(
+        r"\s+",
+        " ",
+        texte
+    )
+
+    return texte.strip()
+
+
+def normaliser_nom_unite_multilangue(
+    texte
+):
+    """
+    Traduit uniquement le nom d'une unité vers l'anglais.
+
+    L'ancien système est toujours essayé AVANT cette fonction.
+    """
+
+    nom = _texte_nom_sans_nombres(
+        texte
+    )
+
+    if not nom:
+        return ""
+
+    cle = normaliser_texte(
+        nom
+    )
+
+    if not cle:
+        return ""
+
+    if cle in UNIT_TRANSLATION_CACHE:
+        return UNIT_TRANSLATION_CACHE[
+            cle
+        ]
+
+    # Déjà sous une forme anglaise connue.
+    if cle in UNIT_TIERS:
+
+        UNIT_TRANSLATION_CACHE[
+            cle
+        ] = cle
+
+        return cle
+
+    # Alias local rapide.
+    compact = cle.replace(
+        " ",
+        ""
+    )
+
+    alias = UNIT_TRANSLATION_ALIASES.get(
+        cle
+    )
+
+    if alias is None:
+        alias = UNIT_TRANSLATION_ALIASES.get(
+            compact
+        )
+
+    if alias is not None:
+
+        resultat = normaliser_texte(
+            alias
+        )
+
+        UNIT_TRANSLATION_CACHE[
+            cle
+        ] = resultat
+
+        return resultat
+
+    # Traduction automatique uniquement en dernier recours.
+    if GoogleTranslator is not None:
+
+        try:
+
+            resultat_brut = GoogleTranslator(
+                source="auto",
+                target="en"
+            ).translate(
+                nom
+            )
+
+            resultat = normaliser_texte(
+                resultat_brut
+            )
+
+            if resultat:
+
+                UNIT_TRANSLATION_CACHE[
+                    cle
+                ] = resultat
+
+                return resultat
+
+        except Exception as e:
+
+            print(
+                "⚠️ Traduction unité indisponible : "
+                f"{e}"
+            )
+
+    UNIT_TRANSLATION_CACHE[
+        cle
+    ] = cle
+
+    return cle
+
+
 def trouver_unite(
     mots
 ):
@@ -889,14 +891,19 @@ def trouver_unite(
     if not mots:
         return None, None
 
-    texte_brut = " ".join(
+    texte = " ".join(
         mot["texte"]
         for mot in mots
     )
 
-    # Première recherche : comportement historique inchangé.
+    # =====================================================
+    # 1. COMPORTEMENT HISTORIQUE
+    # =====================================================
+    #
+    # Si le nom est déjà reconnu, on ne fait absolument rien
+    # de nouveau. Cela protège les captures FR/EN déjà validées.
     normalise = normaliser_texte(
-        texte_brut
+        texte
     )
 
     for nom_normalise in UNIT_NAMES_SORTED:
@@ -908,28 +915,44 @@ def trouver_unite(
                 UNIT_TIERS[nom_normalise]
             )
 
-    # Deuxième recherche : traduction du petit texte OCR.
-    traduit = normaliser_nom_unite_multilangue(
-        texte_brut
+    # =====================================================
+    # 2. TRADUCTION DU NOM SEULEMENT
+    # =====================================================
+
+    nom_sans_nombres = _texte_nom_sans_nombres(
+        texte
     )
 
-    for nom_normalise in UNIT_NAMES_SORTED:
+    traduit = normaliser_nom_unite_multilangue(
+        nom_sans_nombres
+    )
 
-        if (
-            nom_normalise in traduit
-            or
-            traduit in nom_normalise
-        ):
+    if traduit:
 
-            return (
-                nom_normalise,
-                UNIT_TIERS[nom_normalise]
-            )
+        for nom_normalise in UNIT_NAMES_SORTED:
 
-    # Troisième recherche : traduire les tokens individuellement.
+            if (
+                nom_normalise in traduit
+                or
+                traduit in nom_normalise
+            ):
+
+                return (
+                    nom_normalise,
+                    UNIT_TIERS[nom_normalise]
+                )
+
+    # =====================================================
+    # 3. TRADUCTION TOKEN PAR TOKEN
+    # =====================================================
+    #
+    # Utile quand l'OCR a séparé ou mal regroupé le nom.
     tokens = normalise.split()
 
     for token in tokens:
+
+        if not token:
+            continue
 
         traduit_token = (
             normaliser_nom_unite_multilangue(
