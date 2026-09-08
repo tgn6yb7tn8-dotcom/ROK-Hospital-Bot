@@ -22,8 +22,9 @@ TOKEN = os.getenv("DISCORD_TOKEN", "TON_TOKEN_ICI")
 VERIFICATION_CHANNEL_ID = 1544663283653546024
 RESULT_CHANNEL_ID = 1544744659102736474
 
-# Les commandes de gestion seront utilisables uniquement
-# dans le salon des résultats.
+# Les commandes sont utilisables dans le salon des résultats
+# ou en message privé avec le bot. Elles restent réservées
+# aux membres ayant le rôle Server • Admin (ou Administrateur).
 COMMANDS_CHANNEL_ID = RESULT_CHANNEL_ID
 
 # Pour le moment, le bot conserve les messages et captures
@@ -719,37 +720,82 @@ def commande_dans_bon_salon():
     async def predicate(
         ctx,
     ):
+        # Les commandes sont autorisées :
+        # - dans le salon des résultats sur le serveur ;
+        # - en message privé avec le bot.
+        #
+        # L'autorisation réelle est vérifiée séparément par
+        # admin_ou_role_autorise().
+        if ctx.guild is None:
+            return True
 
-        if ctx.channel.id != COMMANDS_CHANNEL_ID:
+        if ctx.channel.id == COMMANDS_CHANNEL_ID:
+            return True
 
-            raise commands.CheckFailure(
-                "Cette commande doit être utilisée "
-                "dans le salon des résultats."
-            )
-
-        return True
+        raise commands.CheckFailure(
+            "Cette commande doit être utilisée dans le salon des "
+            "résultats ou en message privé avec le bot."
+        )
 
     return commands.check(
         predicate
     )
 
 
+def _membre_admin_dans_un_serveur(user):
+    """
+    En DM, Discord ne fournit pas les rôles directement à ctx.author.
+    On vérifie donc si l'utilisateur possède le rôle Server • Admin
+    (ou la permission Administrateur) dans au moins un serveur partagé
+    avec le bot.
+    """
+    for guild in bot.guilds:
+        membre = guild.get_member(user.id)
+
+        if membre is None:
+            continue
+
+        if membre.guild_permissions.administrator:
+            return True
+
+        for role in membre.roles:
+            if role.name == ADMIN_ROLE_NAME:
+                return True
+
+    return False
+
+
 def admin_ou_role_autorise():
     async def predicate(
         ctx,
     ):
+        # -----------------------------------------------------
+        # MESSAGE PRIVE
+        # -----------------------------------------------------
+        # En DM, ctx.author n'a pas de rôles. On retrouve donc
+        # le membre dans les serveurs partagés avec le bot.
+        if ctx.guild is None:
+            if _membre_admin_dans_un_serveur(ctx.author):
+                return True
 
+            raise commands.CheckFailure(
+                "Tu n'as pas le rôle Server • Admin nécessaire "
+                "pour utiliser cette commande."
+            )
+
+        # -----------------------------------------------------
+        # SERVEUR
+        # -----------------------------------------------------
         if ctx.author.guild_permissions.administrator:
             return True
 
         for role in ctx.author.roles:
-
             if role.name == ADMIN_ROLE_NAME:
                 return True
 
         raise commands.CheckFailure(
-            "Tu n'as pas la permission d'utiliser "
-            "cette commande."
+            "Tu n'as pas le rôle Server • Admin nécessaire "
+            "pour utiliser cette commande."
         )
 
     return commands.check(
@@ -1074,6 +1120,7 @@ async def on_ready():
     name="latest",
 )
 @commande_dans_bon_salon()
+@admin_ou_role_autorise()
 async def latest_command(
     ctx,
     player_id: str,
@@ -1146,6 +1193,7 @@ async def latest_command(
     name="history",
 )
 @commande_dans_bon_salon()
+@admin_ou_role_autorise()
 async def history_command(
     ctx,
     player_id: str,
@@ -1419,12 +1467,15 @@ async def delete_command(
     name="rokhelp",
 )
 @commande_dans_bon_salon()
+@admin_ou_role_autorise()
 async def rokhelp_command(
     ctx,
 ):
 
     message = (
         "🤖 **Emi's slave 2.0 — Commands**\n\n"
+        "🔒 **Admin only — Server • Admin required**\n"
+        "Commands can be used in the results channel or by DM.\n\n"
         "`@Emi's slave 2.0` → statistiques globales\n\n"
         "`!latest <Player ID>` → dernière vérification\n"
         "`!history <Player ID>` → historique (10 dernières)\n\n"
