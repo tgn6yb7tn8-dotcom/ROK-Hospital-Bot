@@ -4,3 +4,4 @@ pytesseract
 numpy
 gspread
 google-auth
+deep-translator==1.11.4
