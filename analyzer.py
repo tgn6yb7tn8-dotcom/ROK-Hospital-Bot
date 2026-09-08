@@ -13,6 +13,15 @@ import shutil
 import unicodedata
 from collections import Counter
 
+# Traduction optionnelle des noms d'unités.
+# Le bot peut fonctionner sans le module : dans ce cas, les alias locaux
+# continuent de couvrir les langues déjà rencontrées.
+try:
+    from deep_translator import GoogleTranslator
+except Exception:
+    GoogleTranslator = None
+
+
 import cv2
 import numpy as np
 import pytesseract
@@ -210,6 +219,175 @@ UNIT_NAMES_SORTED = sorted(
     key=len,
     reverse=True
 )
+
+
+# =========================================================
+# TRADUCTION DES NOMS D'UNITES
+# =========================================================
+
+# Quelques alias de base servent de filet de sécurité lorsque le service
+# de traduction n'est pas disponible. On ne recopie pas la liste des unités :
+# les noms anglais existants dans UNIT_TIERS restent la seule référence T4/T5.
+UNIT_TRANSLATION_ALIASES = {
+    # Vietnamese
+    "kiemsiguomdai": "long swordsman",
+    "hiepsiteuton": "teutonic knight",
+    "linhbanno": "crossbowman",
+    "thuongsi": "sergeant",
+    "maryannudelite": "elite maryannu",
+
+    # French OCR
+    "arbaletrier": "crossbowman",
+    "janissaire": "janissary",
+    "mamelouk": "mamluk",
+
+    # Spanish
+    "espadachin": "swordsman",
+    "caballero": "knight",
+    "ballestero": "crossbowman",
+    "jenizaro": "janissary",
+
+    # German
+    "schwertkaempfer": "swordsman",
+    "schwertkämpfer": "swordsman",
+    "ritter": "knight",
+    "armbrustschuetze": "crossbowman",
+    "armbrustschütze": "crossbowman",
+}
+
+UNIT_TRANSLATION_CACHE = {}
+
+
+def normaliser_nom_unite_multilangue(
+    texte
+):
+    """
+    Convertit un petit texte OCRisé contenant un nom d'unité vers une
+    forme anglaise comparable à UNIT_TIERS.
+
+    Étapes :
+      1. normalisation locale ;
+      2. alias connu ;
+      3. recherche directe dans les noms anglais ;
+      4. traduction automatique du petit texte si disponible ;
+      5. cache du résultat.
+    """
+
+    if not texte:
+        return ""
+
+    original = str(
+        texte
+    ).strip()
+
+    cle = normaliser_texte(
+        original
+    )
+
+    if not cle:
+        return ""
+
+    if cle in UNIT_TRANSLATION_CACHE:
+        return UNIT_TRANSLATION_CACHE[
+            cle
+        ]
+
+    # Déjà anglais / nom déjà connu.
+    if cle in UNIT_TIERS:
+
+        UNIT_TRANSLATION_CACHE[
+            cle
+        ] = cle
+
+        return cle
+
+    # Alias local. On teste aussi une version compacte sans espaces,
+    # car l'OCR peut découper différemment les mots.
+    cle_compacte = cle.replace(
+        " ",
+        ""
+    )
+
+    alias = UNIT_TRANSLATION_ALIASES.get(
+        cle
+    )
+
+    if alias is None:
+        alias = UNIT_TRANSLATION_ALIASES.get(
+            cle_compacte
+        )
+
+    if alias is not None:
+
+        traduit = normaliser_texte(
+            alias
+        )
+
+        UNIT_TRANSLATION_CACHE[
+            cle
+        ] = traduit
+
+        return traduit
+
+    # Recherche approximative locale avant le réseau.
+    for anglais in UNIT_NAMES_SORTED:
+
+        if (
+            cle == anglais
+            or
+            cle in anglais
+            or
+            anglais in cle
+        ):
+
+            UNIT_TRANSLATION_CACHE[
+                cle
+            ] = anglais
+
+            return anglais
+
+    # Traduction automatique uniquement sur le petit nom d'unité.
+    # Elle est mise en cache afin qu'une même unité ne soit normalement
+    # traduite qu'une seule fois pendant la durée du processus.
+    if GoogleTranslator is not None:
+
+        try:
+
+            translated = (
+                GoogleTranslator(
+                    source="auto",
+                    target="en"
+                )
+                .translate(
+                    original
+                )
+            )
+
+            translated_normalise = normaliser_texte(
+                translated
+            )
+
+            if translated_normalise:
+
+                UNIT_TRANSLATION_CACHE[
+                    cle
+                ] = translated_normalise
+
+                return translated_normalise
+
+        except Exception as e:
+
+            print(
+                "⚠️ Traduction automatique unité "
+                f"indisponible : {e}"
+            )
+
+    UNIT_TRANSLATION_CACHE[
+        cle
+    ] = cle
+
+    return cle
+
 
 
 # =========================================================
@@ -709,16 +887,16 @@ def trouver_unite(
 ):
 
     if not mots:
-
         return None, None
 
-    texte = " ".join(
+    texte_brut = " ".join(
         mot["texte"]
         for mot in mots
     )
 
+    # Première recherche : comportement historique inchangé.
     normalise = normaliser_texte(
-        texte
+        texte_brut
     )
 
     for nom_normalise in UNIT_NAMES_SORTED:
@@ -730,12 +908,51 @@ def trouver_unite(
                 UNIT_TIERS[nom_normalise]
             )
 
+    # Deuxième recherche : traduction du petit texte OCR.
+    traduit = normaliser_nom_unite_multilangue(
+        texte_brut
+    )
+
+    for nom_normalise in UNIT_NAMES_SORTED:
+
+        if (
+            nom_normalise in traduit
+            or
+            traduit in nom_normalise
+        ):
+
+            return (
+                nom_normalise,
+                UNIT_TIERS[nom_normalise]
+            )
+
+    # Troisième recherche : traduire les tokens individuellement.
+    tokens = normalise.split()
+
+    for token in tokens:
+
+        traduit_token = (
+            normaliser_nom_unite_multilangue(
+                token
+            )
+        )
+
+        for nom_normalise in UNIT_NAMES_SORTED:
+
+            if (
+                nom_normalise in traduit_token
+                or
+                traduit_token in nom_normalise
+            ):
+
+                return (
+                    nom_normalise,
+                    UNIT_TIERS[nom_normalise]
+                )
+
     return None, None
 
 
-# =========================================================
-# TROUVER TIER
-# =========================================================
 
 def trouver_tier(
     mots
@@ -828,15 +1045,17 @@ def trouver_nombre(
 ):
 
     """
-    Trouve la quantité de la ligne.
+    Trouve la quantité de la ligne en se basant sur la position
+    réelle du NOM de l'unité.
 
-    Comportement historique conservé pour toutes les tailles.
+    Le problème précédent était que la fenêtre verticale pouvait
+    contenir plusieurs nombres, notamment le total des blessés.
+    Ici, la quantité doit :
+      1. être proche verticalement du nom de l'unité ;
+      2. être située à droite du nom ;
+      3. être dans le panneau des unités.
 
-    Correction ciblée :
-    sur les fenêtres isolées d'environ 1373 px de large, certaines
-    captures ont un décalage vertical plus important entre le nom de
-    l'unité et le nombre. On autorise alors 60 px et, si plusieurs
-    nombres concurrents existent, on privilégie le plus long nombre.
+    Cela évite de récupérer 280004 depuis "Blessés graves".
     """
 
     if not mots or not nom_unite:
@@ -865,6 +1084,8 @@ def trouver_nombre(
                 mot
             )
 
+    # Si OCR a regroupé plusieurs mots du nom dans un seul token,
+    # on retrouve quand même un point de référence avec le premier mot.
     if not mots_nom:
 
         premier = nom_morceaux[0]
@@ -898,22 +1119,7 @@ def trouver_nombre(
         for mot in mots_nom
     )
 
-    # Seulement pour le nouveau layout ~1373 px.
-    layout_nouvelle_taille = (
-        1350
-        <=
-        image_width
-        <=
-        1400
-    )
-
-    tolerance_y = (
-        60
-        if layout_nouvelle_taille
-        else
-        35
-    )
-
+    # Quantité sur la même ligne et à droite du nom.
     candidats_ligne = [
         candidat
         for candidat in candidats
@@ -924,7 +1130,7 @@ def trouver_nombre(
                 nom_y
             )
             <=
-            tolerance_y
+            35
         )
         and
         (
@@ -942,33 +1148,14 @@ def trouver_nombre(
 
     if candidats_ligne:
 
-        if layout_nouvelle_taille:
-
-            # Pour cette seule taille, l'OCR génère parfois :
-            #   1225
-            #   225
-            #   25
-            # à des positions proches. Le nombre à 4 chiffres est
-            # le plus cohérent avec le texte réel.
-            return max(
-                candidats_ligne,
-                key=lambda candidat:
-                (
-                    len(
-                        str(
-                            candidat["valeur"]
-                        )
-                    ),
-                    candidat["x"]
-                )
-            )["valeur"]
-
         return max(
             candidats_ligne,
             key=lambda candidat:
             candidat["x"]
         )["valeur"]
 
+    # Second essai : certains OCR placent le point gauche du nombre
+    # légèrement avant la fin du dernier mot du nom.
     candidats_secours = [
         candidat
         for candidat in candidats
@@ -979,7 +1166,7 @@ def trouver_nombre(
                 nom_y
             )
             <=
-            tolerance_y
+            35
         )
         and
         (
@@ -990,21 +1177,6 @@ def trouver_nombre(
     ]
 
     if candidats_secours:
-
-        if layout_nouvelle_taille:
-
-            return max(
-                candidats_secours,
-                key=lambda candidat:
-                (
-                    len(
-                        str(
-                            candidat["valeur"]
-                        )
-                    ),
-                    candidat["x"]
-                )
-            )["valeur"]
 
         return max(
             candidats_secours,
@@ -2057,49 +2229,15 @@ def _ocr_gold_pc(
         )
     )
 
-    # Pour le nouveau layout ~1373x781, le premier chiffre de 185.7K
-    # est très proche du bord de l'icône. Les offsets 2/4 permettent
-    # de le conserver. Les autres tailles gardent les offsets historiques.
-    layout_nouvelle_taille = (
-        1350
-        <=
-        w
-        <=
-        1400
-        and
-        740
-        <=
-        h
-        <=
-        820
-    )
-
-    if layout_nouvelle_taille:
-
-        offsets = (
-            2,
-            4,
-            6,
-            8,
-            12,
-            16,
-            20,
-            24
-        )
-
-    else:
-
-        offsets = (
-            8,
-            12,
-            16,
-            20,
-            24
-        )
-
     # Plusieurs offsets : ils doivent tous lire le même montant si
     # le texte est réellement présent.
-    for offset in offsets:
+    for offset in (
+        8,
+        12,
+        16,
+        20,
+        24
+    ):
 
         x1 = max(
             0,
