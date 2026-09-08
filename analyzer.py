@@ -640,42 +640,63 @@ def detecter_lignes_depuis_ocr(
 ):
 
     """
-    Détecte les lignes à partir des mots OCR contenant un nom
-    d'unité connu. Ce fallback est utilisé quand les barres vertes
-    ne sont plus vertes parce que les soins ont déjà été lancés.
+    Détecte les lignes à partir des mots OCR qui correspondent au
+    début d'un nom d'unité connu, y compris les alias multilingues.
+
+    On utilise uniquement des mots distinctifs : cela évite de prendre
+    des mots génériques comme ``si`` comme point de départ d'une ligne.
     """
 
     if not mots_panel:
         return []
 
+    premiers = set()
+
+    # Noms anglais/français historiques.
+    for nom_normalise in UNIT_NAMES_SORTED:
+        morceaux = nom_normalise.split()
+        if morceaux:
+            premiers.add(morceaux[0])
+
+    # Aliases multilingues explicites.
+    for alias in UNIT_TRANSLATION_ALIASES:
+        morceaux = normaliser_texte(alias).split()
+        if morceaux:
+            premiers.add(morceaux[0])
+
+    for alias in T3_TRANSLATION_ALIASES:
+        morceaux = normaliser_texte(alias).split()
+        if morceaux:
+            premiers.add(morceaux[0])
+
+    # Quelques variantes OCR de premiers mots vietnamiens.
+    premiers.update({
+        "kiem",
+        "kiemsi",
+        "hiep",
+        "hiepsi",
+        "linh",
+        "thuong",
+        "thuongsi",
+    })
+
     candidats = []
 
     for mot in mots_panel:
-
-        texte = normaliser_texte(
-            mot["texte"]
-        )
-
+        texte = normaliser_texte(mot["texte"])
         if not texte:
             continue
 
-        # On cherche le début des noms d'unités dans les mots OCR.
-        # Même si le nom est composé de plusieurs mots, un mot
-        # suffisamment distinctif peut servir à repérer sa ligne.
-        for nom_normalise in UNIT_NAMES_SORTED:
-
-            morceaux = nom_normalise.split()
-
+        # On ne regarde que le début du token pour tolérer ``Hiép-SiTeuton``
+        # ou ``Kiém`` mal segmenté par Tesseract.
+        for premier in premiers:
             if (
-                texte == morceaux[0]
-                or texte in morceaux
-                or morceaux[0] in texte
+                texte == premier
+                or texte.startswith(premier)
             ):
-
-                candidats.append(
-                    mot["y"]
-                )
-
+                # Les noms d'unités se trouvent dans le panneau de droite.
+                if mot["x"] / max(1, 1333) >= 0.45:
+                    candidats.append(mot["y"])
                 break
 
     if not candidats:
@@ -686,20 +707,13 @@ def detecter_lignes_depuis_ocr(
     lignes = []
 
     for y in candidats:
-
         if not lignes:
-
             lignes.append(y)
             continue
 
-        if abs(y - lignes[-1]) <= 22:
-
-            lignes[-1] = (
-                lignes[-1] + y
-            ) // 2
-
+        if abs(y - lignes[-1]) <= 35:
+            lignes[-1] = (lignes[-1] + y) // 2
         else:
-
             lignes.append(y)
 
     return lignes
@@ -743,6 +757,26 @@ UNIT_TRANSLATION_ALIASES = {
     "schwertkaempfer": "swordsman",
     "ritter": "knight",
     "armbrustschuetze": "crossbowman",
+
+    # Vietnamese - formes visibles dans les captures de Rise of Kingdoms.
+    # Elles sont reconnues DIRECTEMENT, sans passer par Google Translate.
+    "kiem si guom dai": "long swordsman",
+    "kiem si gudm dai": "long swordsman",
+    "kiem si guom dai": "long swordsman",
+    "hiep si teuton": "teutonic knight",
+    "hiep siteuton": "teutonic knight",
+    "hiep si teuton": "teutonic knight",
+    "linh ban no": "crossbowman",
+    "linh no ban": "crossbowman",
+    "thuong si": "sergeant",
+}
+
+# Noms T3 utilisés uniquement pour identifier une ligne et l'ignorer ensuite.
+# Ils ne sont jamais ajoutés aux totaux T4/T5.
+T3_TRANSLATION_ALIASES = {
+    "sergeant": "sergeant",
+    "sergent": "sergeant",
+    "thuong si": "sergeant",
 }
 
 UNIT_TRANSLATION_CACHE = {}
@@ -884,6 +918,46 @@ def normaliser_nom_unite_multilangue(
     return cle
 
 
+def trouver_unite_vietnamien(mots):
+
+    """Reconnaissance tolérante des noms vietnamiens vus sur les captures.
+
+    Tesseract peut produire ``gudm`` au lieu de ``guom`` ou coller
+    ``SiTeuton``. On se base donc sur plusieurs mots distinctifs de la
+    ligne plutôt que sur une phrase exacte.
+    """
+
+    tokens = [
+        normaliser_texte(mot["texte"])
+        for mot in mots
+        if normaliser_texte(mot["texte"])
+    ]
+    ensemble = set(tokens)
+
+    if "kiem" in ensemble and "dai" in ensemble:
+        return "long swordsman", "T4"
+
+    if "hiep" in ensemble and any(
+        "teuton" in token or token == "teuton"
+        for token in ensemble
+    ):
+        return "teutonic knight", "T4"
+
+    if "linh" in ensemble and (
+        "ban" in ensemble or "no" in ensemble
+    ):
+        return "crossbowman", "T4"
+
+    if (
+        "thuong" in ensemble
+        or "thudng" in ensemble
+        or "thusngsi" in ensemble
+    ) and "si" in ensemble:
+        return "sergeant", "T3"
+
+    return None, None
+
+
 def trouver_unite(
     mots
 ):
@@ -891,36 +965,58 @@ def trouver_unite(
     if not mots:
         return None, None
 
-    texte = " ".join(
-        mot["texte"]
-        for mot in mots
-    )
-
     # =====================================================
-    # 1. COMPORTEMENT HISTORIQUE
+    # 1. RECONNAISSANCE DIRECTE / HISTORIQUE
     # =====================================================
-    #
-    # Si le nom est déjà reconnu, on ne fait absolument rien
-    # de nouveau. Cela protège les captures FR/EN déjà validées.
+    # On travaille uniquement avec les mots de LA LIGNE courante.
+    # C'est essentiel : l'ancien code envoyait parfois plusieurs lignes
+    # au traducteur et celui-ci pouvait transformer du texte parasite
+    # en un autre nom d'unité (ici, des unités T4 devenaient T5).
     normalise = normaliser_texte(
-        texte
+        " ".join(mot["texte"] for mot in mots)
     )
 
+    # Les noms anglais/français déjà connus restent prioritaires.
     for nom_normalise in UNIT_NAMES_SORTED:
-
         if nom_normalise in normalise:
+            return nom_normalise, UNIT_TIERS[nom_normalise]
 
-            return (
-                nom_normalise,
-                UNIT_TIERS[nom_normalise]
-            )
+    # Aliases multilingues sûrs : aucune traduction automatique n'est
+    # nécessaire pour les langues que nous connaissons explicitement.
+    aliases = sorted(
+        UNIT_TRANSLATION_ALIASES.items(),
+        key=lambda item: len(normaliser_texte(item[0])),
+        reverse=True
+    )
+
+    for alias, canonique in aliases:
+        alias_norm = normaliser_texte(alias)
+        canonique_norm = normaliser_texte(canonique)
+
+        if alias_norm and alias_norm in normalise:
+            if canonique_norm in UNIT_TIERS:
+                return canonique_norm, UNIT_TIERS[canonique_norm]
+
+    # Reconnaissance tolérante du vietnamien.
+    nom_vn, tier_vn = trouver_unite_vietnamien(mots)
+    if tier_vn is not None:
+        return nom_vn, tier_vn
+
+    # T3 : on l'identifie seulement pour que la ligne ne pollue pas
+    # la détection des lignes suivantes. Le total final l'ignore.
+    for alias, canonique in T3_TRANSLATION_ALIASES.items():
+        alias_norm = normaliser_texte(alias)
+        if alias_norm and alias_norm in normalise:
+            return normaliser_texte(canonique), "T3"
 
     # =====================================================
-    # 2. TRADUCTION DU NOM SEULEMENT
+    # 2. TRADUCTION AUTOMATIQUE EN DERNIER RECOURS
     # =====================================================
-
+    # IMPORTANT : on ne traduit plus la totalité d'une fenêtre OCR
+    # contenant potentiellement des éléments graphiques et plusieurs
+    # lignes. Seul le texte déjà filtré de la ligne est envoyé.
     nom_sans_nombres = _texte_nom_sans_nombres(
-        texte
+        " ".join(mot["texte"] for mot in mots)
     )
 
     traduit = normaliser_nom_unite_multilangue(
@@ -928,53 +1024,11 @@ def trouver_unite(
     )
 
     if traduit:
-
         for nom_normalise in UNIT_NAMES_SORTED:
-
-            if (
-                nom_normalise in traduit
-                or
-                traduit in nom_normalise
-            ):
-
-                return (
-                    nom_normalise,
-                    UNIT_TIERS[nom_normalise]
-                )
-
-    # =====================================================
-    # 3. TRADUCTION TOKEN PAR TOKEN
-    # =====================================================
-    #
-    # Utile quand l'OCR a séparé ou mal regroupé le nom.
-    tokens = normalise.split()
-
-    for token in tokens:
-
-        if not token:
-            continue
-
-        traduit_token = (
-            normaliser_nom_unite_multilangue(
-                token
-            )
-        )
-
-        for nom_normalise in UNIT_NAMES_SORTED:
-
-            if (
-                nom_normalise in traduit_token
-                or
-                traduit_token in nom_normalise
-            ):
-
-                return (
-                    nom_normalise,
-                    UNIT_TIERS[nom_normalise]
-                )
+            if nom_normalise == traduit:
+                return nom_normalise, UNIT_TIERS[nom_normalise]
 
     return None, None
-
 
 
 def trouver_tier(
@@ -1130,6 +1184,22 @@ def trouver_nombre(
                 )
 
     if not mots_nom:
+        # Pour les noms multilingues, le nom canonique peut ne pas exister
+        # littéralement dans l'OCR. La quantité reste néanmoins identifiable
+        # sur la même ligne, à droite du texte.
+        candidats_ligne = [
+            candidat
+            for candidat in candidats
+            if (
+                abs(candidat["y"] - sum(mot["y"] for mot in mots) / max(1, len(mots))) <= 35
+            )
+            and (candidat["x"] / image_width >= 0.55)
+        ]
+        if candidats_ligne:
+            return min(
+                candidats_ligne,
+                key=lambda candidat: candidat["x"]
+            )["valeur"]
         return None
 
     nom_y = sum(
@@ -1171,10 +1241,14 @@ def trouver_nombre(
 
     if candidats_ligne:
 
-        return max(
+        # La quantité est normalement juste à droite du nom.
+        # Prendre le nombre le plus à droite était dangereux : des éléments
+        # de l'interface (ex. "225") pouvaient être capturés à sa place.
+        # On prend donc le candidat le plus proche de la fin du nom.
+        return min(
             candidats_ligne,
             key=lambda candidat:
-            candidat["x"]
+            candidat["x"] - nom_x_max
         )["valeur"]
 
     # Second essai : certains OCR placent le point gauche du nombre
@@ -1220,26 +1294,70 @@ def analyser_ligne(
     image_width
 ):
 
-    # Fenêtre suffisamment large pour retrouver le nom complet,
-    # mais la quantité sera ensuite liée verticalement au nom.
+    # =====================================================
+    # FILTRE STRICT SUR LA LIGNE
+    # =====================================================
+    # Dans les captures PC/téléphone, une fenêtre trop large faisait
+    # entrer les noms des lignes voisines dans l'OCR. Cela permettait
+    # au traducteur de fabriquer un faux nom T5.
+    #
+    # Le nom est à gauche de la quantité. On limite donc fortement la
+    # zone au panneau des unités et à la ligne courante.
     mots = [
         mot
         for mot in mots_panel
         if (
-            row_y - 65
-            <=
-            mot["y"]
-            <=
-            row_y + 25
+            row_y - 32
+            <= mot["y"]
+            <= row_y + 32
+        )
+        and (
+            image_width * 0.47
+            <= mot["x"]
+            <= image_width * 0.76
+        )
+        and normaliser_texte(mot["texte"])
+    ]
+
+    # Retirer les tokens purement numériques de la recherche du nom.
+    mots_nom = []
+    for mot in mots:
+        brut = str(mot["texte"]).strip()
+        if re.fullmatch(r"[\d.,]+", brut):
+            continue
+        mots_nom.append(mot)
+
+    # Tesseract renvoie parfois les mots dans un ordre différent.
+    # Les remettre de gauche à droite permet de reconstruire correctement
+    # des noms comme "Thuong si".
+    mots_nom.sort(key=lambda mot: (mot["y"], mot["x"]))
+
+    nom_unite, tier = trouver_unite(
+        mots_nom
+    )
+
+    if tier is None:
+        return None, None, None
+
+    # Pour retrouver la quantité, on utilise tous les mots proches de la
+    # ligne, mais sans quitter le panneau des unités.
+    mots_nombre = [
+        mot
+        for mot in mots_panel
+        if (
+            row_y - 32
+            <= mot["y"]
+            <= row_y + 32
+        )
+        and (
+            image_width * 0.47
+            <= mot["x"]
+            <= image_width * 0.95
         )
     ]
 
-    nom_unite, tier = trouver_unite(
-        mots
-    )
-
     nombre = trouver_nombre(
-        mots,
+        mots_nombre,
         nom_unite,
         image_width
     )
@@ -3076,17 +3194,15 @@ def analyser_image(
         mots_panel
     )
 
-    lignes = list(lignes_vertes)
-
-    for y in lignes_ocr:
-
-        proche = any(
-            abs(y - existant) <= 35
-            for existant in lignes
-        )
-
-        if not proche:
-            lignes.append(y)
+    # Quand l'OCR connaît les noms des unités, ses positions sont plus
+    # fiables que les barres vertes : les barres peuvent être décalées
+    # verticalement ou être détectées dans le décor bleu du panneau.
+    # On utilise donc les lignes OCR en priorité. Les barres ne servent
+    # de secours que si aucun nom exploitable n'a été trouvé.
+    if lignes_ocr:
+        lignes = list(lignes_ocr)
+    else:
+        lignes = list(lignes_vertes)
 
     lignes.sort()
 
@@ -3114,6 +3230,13 @@ def analyser_image(
                 "unité indéterminée"
             )
 
+            continue
+
+        # Les T3 sont volontairement exclus des résultats finaux.
+        if tier == "T3":
+            print(
+                f"Ligne {row_y} : {nom_unite} (T3) ignorée"
+            )
             continue
 
         if nombre is None:
