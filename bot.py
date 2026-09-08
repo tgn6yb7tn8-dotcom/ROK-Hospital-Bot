@@ -27,10 +27,9 @@ RESULT_CHANNEL_ID = 1544744659102736474
 # aux membres ayant le rôle Server • Admin (ou Administrateur).
 COMMANDS_CHANNEL_ID = RESULT_CHANNEL_ID
 
-# Pour le moment, le bot conserve les messages et captures
-# dans le salon de vérification, même après traitement ou erreur.
-# Remettre cette valeur à True plus tard si on veut réactiver
-# la suppression automatique.
+# Nettoyage automatique du salon de vérification.
+# Après chaque tentative de vérification (succès ou erreur),
+# le bot supprime absolument tous les messages de ce salon.
 DELETE_SOURCE_MESSAGES = True
 
 # Nom du rôle Discord autorisé à utiliser !delete et !update.
@@ -49,6 +48,59 @@ IMAGE_EXTENSIONS = {
 }
 
 MAX_IMAGES = 1
+
+
+async def nettoyer_salon_verification():
+    """
+    Supprime tous les messages du salon de vérification.
+
+    Le nettoyage est volontairement global : peu importe l'auteur,
+    le contenu ou le résultat de la vérification, le salon reste vide.
+    """
+
+    if not DELETE_SOURCE_MESSAGES:
+        return
+
+    try:
+        channel = bot.get_channel(VERIFICATION_CHANNEL_ID)
+
+        if channel is None:
+            channel = await bot.fetch_channel(
+                VERIFICATION_CHANNEL_ID
+            )
+
+        if not isinstance(channel, discord.TextChannel):
+            print(
+                "⚠️ Le salon de vérification n'est pas un salon texte."
+            )
+            return
+
+        print(
+            "🧹 Nettoyage complet du salon de vérification..."
+        )
+
+        await channel.purge(
+            limit=None,
+            bulk=True,
+            reason="Nettoyage automatique après vérification",
+        )
+
+        print(
+            "✅ Salon de vérification entièrement nettoyé."
+        )
+
+    except discord.Forbidden:
+        print(
+            "❌ Impossible de nettoyer le salon de vérification : "
+            "le bot n'a pas les permissions nécessaires "
+            "(Manage Messages / Read Message History)."
+        )
+
+    except Exception as e:
+        print(
+            "❌ Erreur pendant le nettoyage du salon de vérification : "
+            f"{repr(e)}"
+        )
 
 
 # =========================================================
@@ -1667,6 +1719,7 @@ async def on_message(
                 "❌ Salon de résultats introuvable."
             )
 
+            await nettoyer_salon_verification()
             return
 
         # -------------------------------------------------
@@ -1706,6 +1759,7 @@ async def on_message(
                 ),
             )
 
+            await nettoyer_salon_verification()
             return
 
         if len(attachments_images) > MAX_IMAGES:
@@ -1727,6 +1781,7 @@ async def on_message(
                 ),
             )
 
+            await nettoyer_salon_verification()
             return
 
         # -------------------------------------------------
@@ -1754,6 +1809,7 @@ async def on_message(
                 ),
             )
 
+            await nettoyer_salon_verification()
             return
 
         if len(player_id) != 9:
@@ -1777,6 +1833,7 @@ async def on_message(
                 ),
             )
 
+            await nettoyer_salon_verification()
             return
 
         # -------------------------------------------------
@@ -1839,6 +1896,7 @@ async def on_message(
                             ),
                         )
 
+                        await nettoyer_salon_verification()
                         return
 
                     if not deja_present:
@@ -1870,6 +1928,7 @@ async def on_message(
                     ),
                 )
 
+                await nettoyer_salon_verification()
                 return
 
             # -------------------------------------------------
@@ -2016,6 +2075,7 @@ async def on_message(
                         "message source conservé."
                     )
 
+                    await nettoyer_salon_verification()
                     return
 
                 # -------------------------------------------------
@@ -2077,6 +2137,7 @@ async def on_message(
                     )
 
 
+                    await nettoyer_salon_verification()
                     return
 
                 # -------------------------------------------------
@@ -2241,6 +2302,7 @@ async def on_message(
                         player_id
                     )
 
+        await nettoyer_salon_verification()
         return
 
     # -----------------------------------------------------
