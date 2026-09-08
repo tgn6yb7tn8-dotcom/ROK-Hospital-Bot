@@ -1367,7 +1367,7 @@ def analyser_ligne(
         and (
             image_width * 0.47
             <= mot["x"]
-            <= image_width * 0.76
+            <= image_width * 0.90
         )
         and normaliser_texte(mot["texte"])
     ]
