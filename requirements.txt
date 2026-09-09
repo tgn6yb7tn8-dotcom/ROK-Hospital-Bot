@@ -2,6 +2,7 @@ discord.py
 opencv-python-headless
 pytesseract
 numpy
+Pillow
 gspread
 google-auth
 deep-translator==1.11.4
