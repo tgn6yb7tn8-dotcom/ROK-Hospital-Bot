@@ -20,7 +20,7 @@ from analyzer import analyser_plusieurs_images
 TOKEN = os.getenv("DISCORD_TOKEN", "TON_TOKEN_ICI")
 
 VERIFICATION_CHANNEL_ID = 1544663283653546024
-RESULT_CHANNEL_ID = 1544744659102736474
+RESULT_CHANNEL_ID = 1457869464379850984
 
 # Les commandes sont utilisables dans le salon des résultats
 # ou en message privé avec le bot. Elles restent réservées
