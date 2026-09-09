@@ -23,6 +23,8 @@ except ImportError:
 import pytesseract
 
 
+ANALYZER_BUILD = "2026-09-09-vietnamese-troops-fixed"
+
 # =========================================================
 # TESSERACT CONFIGURATION
 # =========================================================
@@ -1019,18 +1021,7 @@ def trouver_unite(
         return nom_pl, tier_pl
 
     # =====================================================
-    # 1. VIETNAMIEN DIRECT — PRIORITE ABSOLUE
-    # =====================================================
-    # Certaines captures vietnamiennes donnent des tokens separes :
-    # Kiém + si + guom + dai. On force donc cette reconnaissance avant
-    # toute recherche generique. Cela garantit que Long Swordsman reste
-    # T4 meme si Tesseract ajoute du bruit autour du nom.
-    nom_vn, tier_vn = trouver_unite_vietnamien(mots)
-    if tier_vn is not None:
-        return nom_vn, tier_vn
-
-    # =====================================================
-    # 2. RECONNAISSANCE PAR TOKENS
+    # 1. RECONNAISSANCE PAR TOKENS
     # =====================================================
     # Tesseract peut insérer des mots parasites entre les vrais mots.
     # Exemple observé sur une capture :
@@ -1116,7 +1107,10 @@ def trouver_unite(
             if canonique_norm in UNIT_TIERS:
                 return canonique_norm, UNIT_TIERS[canonique_norm]
 
-    # Le vietnamien a deja ete traite en priorite plus haut.
+    # Reconnaissance tolérante du vietnamien.
+    nom_vn, tier_vn = trouver_unite_vietnamien(mots)
+    if tier_vn is not None:
+        return nom_vn, tier_vn
 
     # T3 : on l'identifie seulement pour que la ligne ne pollue pas
     # la détection des lignes suivantes. Le total final l'ignore.
@@ -3474,6 +3468,8 @@ def est_doublon(
 def analyser_plusieurs_images(
     images
 ):
+
+    print(f"Analyzer build : {ANALYZER_BUILD}")
 
     if not images:
 
