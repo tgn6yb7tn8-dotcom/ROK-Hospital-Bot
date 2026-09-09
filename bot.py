@@ -1073,33 +1073,6 @@ async def envoyer_dm_succes_admin(
 # OUTILS DISCORD
 # =========================================================
 
-async def obtenir_salon_resultats():
-
-    channel = bot.get_channel(
-        RESULT_CHANNEL_ID
-    )
-
-    if channel is not None:
-        return channel
-
-    try:
-
-        channel = await bot.fetch_channel(
-            RESULT_CHANNEL_ID
-        )
-
-        return channel
-
-    except Exception as e:
-
-        print(
-            "Impossible de récupérer le salon "
-            f"de résultats : {e}"
-        )
-
-        return None
-
-
 async def envoyer_images_resultat(
     image_paths,
 ):
@@ -1722,19 +1695,6 @@ async def on_message(
             "========================================"
         )
 
-        result_channel = (
-            await obtenir_salon_resultats()
-        )
-
-        if result_channel is None:
-
-            print(
-                "❌ Salon de résultats introuvable."
-            )
-
-            await nettoyer_salon_verification()
-            return
-
         # -------------------------------------------------
         # VERIFICATION DES CAPTURES
         # -------------------------------------------------
@@ -1755,12 +1715,6 @@ async def on_message(
 
         if not attachments_images:
 
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{message.content.strip() or 'Unknown'}`\n"
-                "No valid screenshot was attached."
-            )
 
             await envoyer_dm_erreur(
                 message.author,
@@ -1777,13 +1731,6 @@ async def on_message(
 
         if len(attachments_images) > MAX_IMAGES:
 
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{message.content.strip() or 'Unknown'}`\n"
-                f"Maximum allowed screenshots: "
-                f"**{MAX_IMAGES}**."
-            )
 
             await envoyer_dm_erreur(
                 message.author,
@@ -1805,13 +1752,6 @@ async def on_message(
 
         if not player_id.isdigit():
 
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{player_id or 'Unknown'}`\n"
-                "The message must contain the numeric "
-                "Player ID only."
-            )
 
             await envoyer_dm_erreur(
                 message.author,
@@ -1827,13 +1767,6 @@ async def on_message(
 
         if len(player_id) != 9:
 
-            await result_channel.send(
-                "❌ **Verification failed**\n"
-                f"👤 **Player ID:** "
-                f"`{player_id}`\n"
-                "A valid Player ID must contain exactly "
-                "**9 digits**."
-            )
 
             await envoyer_dm_erreur(
                 message.author,
@@ -1890,14 +1823,6 @@ async def on_message(
                             repr(e)
                         )
 
-                        await result_channel.send(
-                            "❌ **Verification error**\n\n"
-                            f"👤 **Player ID:** "
-                            f"{player_id}\n\n"
-                            "The bot could not check whether "
-                            "this Player ID already exists "
-                            "in Google Sheets."
-                        )
 
                         await envoyer_dm_erreur(
                             message.author,
@@ -1920,15 +1845,6 @@ async def on_message(
 
             if deja_present:
 
-                await result_channel.send(
-                    "⚠️ **Player ID already verified**\n\n"
-                    f"👤 **Player ID:** "
-                    f"{player_id}\n\n"
-                    "This Player ID already exists in "
-                    "the `hopital` sheet or is currently being "
-                    "verified.\n"
-                    "The new verification was ignored."
-                )
 
                 await envoyer_dm_erreur(
                     message.author,
@@ -2059,18 +1975,6 @@ async def on_message(
 
                 if not analyse_valide:
 
-                    await result_channel.send(
-                        content=(
-                            "❌ **Verification failed**\n\n"
-                            f"👤 **Player ID:** "
-                            f"{player_id}\n\n"
-                            "The screenshots could not be "
-                            "analyzed correctly.\n"
-                            "The original screenshots are "
-                            "attached below for manual review."
-                        ),
-                        files=fichiers_discord,
-                    )
 
                     await envoyer_dm_erreur(
                         message.author,
@@ -2124,19 +2028,6 @@ async def on_message(
                         repr(e)
                     )
 
-                    await result_channel.send(
-                        content=(
-                            "❌ **Verification error**\n\n"
-                            f"👤 **Player ID:** "
-                            f"{player_id}\n\n"
-                            "The verification was analyzed "
-                            "correctly, but the result could "
-                            "not be saved to Google Sheets.\n"
-                            "The original screenshots are "
-                            "attached below."
-                        ),
-                        files=fichiers_discord,
-                    )
 
                     await envoyer_dm_erreur(
                         message.author,
@@ -2208,14 +2099,9 @@ async def on_message(
                     lignes_resultat
                 )
 
-                await result_channel.send(
-                    content=message_resultat,
-                    files=fichiers_discord,
-                )
 
                 print(
-                    "✅ Vérification envoyée "
-                    "dans le salon de résultats."
+                    "✅ Vérification traitée avec succès."
                 )
 
                 # -------------------------------------------------
@@ -2257,18 +2143,6 @@ async def on_message(
                         )
                     )
 
-                    await result_channel.send(
-                        content=(
-                            "❌ **Verification error**\n\n"
-                            f"👤 **Player ID:** "
-                            f"{player_id}\n\n"
-                            "An unexpected error occurred "
-                            "while analyzing the screenshots.\n"
-                            "The original screenshots are "
-                            "attached below for manual review."
-                        ),
-                        files=fichiers_discord,
-                    )
 
                     await envoyer_dm_erreur(
                         message.author,
