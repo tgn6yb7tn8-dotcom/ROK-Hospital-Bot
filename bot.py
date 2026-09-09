@@ -29,7 +29,7 @@ COMMANDS_CHANNEL_ID = RESULT_CHANNEL_ID
 
 # Nettoyage automatique du salon de vérification.
 # Après chaque tentative de vérification (succès ou erreur),
-# le bot supprime absolument tous les messages de ce salon.
+# le bot supprime uniquement le message correspondant à cette tentative.
 DELETE_SOURCE_MESSAGES = True
 
 # Nom du rôle Discord autorisé à utiliser !delete et !update.
@@ -39,6 +39,8 @@ ADMIN_ROLE_NAME = "Server • Admin"
 # Discord User ID qui recevra également un DM lorsqu'une
 # vérification échoue ou rencontre une erreur.
 ERROR_NOTIFICATION_USER_ID = 925122125147291719
+
+BOT_BUILD = "2026-09-09-scoped-delete"
 
 IMAGE_EXTENSIONS = {
     ".png",
@@ -50,58 +52,47 @@ IMAGE_EXTENSIONS = {
 MAX_IMAGES = 1
 
 
-async def nettoyer_salon_verification():
+async def supprimer_message_verification(message):
     """
-    Supprime tous les messages du salon de vérification.
+    Supprime uniquement le message de vérification qui vient d'être
+    traité par le bot.
 
-    Le nettoyage est volontairement global : peu importe l'auteur,
-    le contenu ou le résultat de la vérification, le salon reste vide.
+    Plusieurs joueurs peuvent envoyer leurs captures à la suite :
+    la fin d'une vérification ne doit jamais supprimer les messages
+    des autres joueurs encore en attente.
     """
 
     if not DELETE_SOURCE_MESSAGES:
         return
 
     try:
-        channel = bot.get_channel(VERIFICATION_CHANNEL_ID)
-
-        if channel is None:
-            channel = await bot.fetch_channel(
-                VERIFICATION_CHANNEL_ID
-            )
-
-        if not isinstance(channel, discord.TextChannel):
-            print(
-                "⚠️ Le salon de vérification n'est pas un salon texte."
-            )
+        if message.channel.id != VERIFICATION_CHANNEL_ID:
             return
 
-        print(
-            "🧹 Nettoyage complet du salon de vérification..."
-        )
-
-        await channel.purge(
-            limit=None,
-            bulk=True,
-            reason="Nettoyage automatique après vérification",
+        await message.delete(
+            reason="Message de vérification traité par le bot"
         )
 
         print(
-            "✅ Salon de vérification entièrement nettoyé."
+            f"🧹 Message de vérification {message.id} supprimé."
+        )
+
+    except discord.NotFound:
+        print(
+            f"ℹ️ Message de vérification {message.id} déjà supprimé."
         )
 
     except discord.Forbidden:
         print(
-            "❌ Impossible de nettoyer le salon de vérification : "
-            "le bot n'a pas les permissions nécessaires "
-            "(Manage Messages / Read Message History)."
+            "❌ Impossible de supprimer le message de vérification : "
+            "le bot n'a pas la permission Manage Messages."
         )
 
-    except Exception as e:
+    except discord.HTTPException as e:
         print(
-            "❌ Erreur pendant le nettoyage du salon de vérification : "
-            f"{repr(e)}"
+            "❌ Erreur Discord pendant la suppression du message "
+            f"{message.id}: {repr(e)}"
         )
-
 
 # =========================================================
 # GOOGLE SHEETS
@@ -1144,6 +1135,10 @@ async def on_ready():
     )
 
     print(
+        f"Build : {BOT_BUILD}"
+    )
+
+    print(
         f"Compte : {bot.user}"
     )
 
@@ -1732,7 +1727,7 @@ async def on_message(
                 "❌ Salon de résultats introuvable."
             )
 
-            await nettoyer_salon_verification()
+            await supprimer_message_verification(message)
             return
 
         # -------------------------------------------------
@@ -1772,7 +1767,7 @@ async def on_message(
                 ),
             )
 
-            await nettoyer_salon_verification()
+            await supprimer_message_verification(message)
             return
 
         if len(attachments_images) > MAX_IMAGES:
@@ -1794,7 +1789,7 @@ async def on_message(
                 ),
             )
 
-            await nettoyer_salon_verification()
+            await supprimer_message_verification(message)
             return
 
         # -------------------------------------------------
@@ -1822,7 +1817,7 @@ async def on_message(
                 ),
             )
 
-            await nettoyer_salon_verification()
+            await supprimer_message_verification(message)
             return
 
         if len(player_id) != 9:
@@ -1846,7 +1841,7 @@ async def on_message(
                 ),
             )
 
-            await nettoyer_salon_verification()
+            await supprimer_message_verification(message)
             return
 
         # -------------------------------------------------
@@ -1909,7 +1904,7 @@ async def on_message(
                             ),
                         )
 
-                        await nettoyer_salon_verification()
+                        await supprimer_message_verification(message)
                         return
 
                     if not deja_present:
@@ -1941,7 +1936,7 @@ async def on_message(
                     ),
                 )
 
-                await nettoyer_salon_verification()
+                await supprimer_message_verification(message)
                 return
 
             # -------------------------------------------------
@@ -2088,7 +2083,7 @@ async def on_message(
                         "message source conservé."
                     )
 
-                    await nettoyer_salon_verification()
+                    await supprimer_message_verification(message)
                     return
 
                 # -------------------------------------------------
@@ -2150,7 +2145,7 @@ async def on_message(
                     )
 
 
-                    await nettoyer_salon_verification()
+                    await supprimer_message_verification(message)
                     return
 
                 # -------------------------------------------------
@@ -2315,7 +2310,7 @@ async def on_message(
                         player_id
                     )
 
-        await nettoyer_salon_verification()
+        await supprimer_message_verification(message)
         return
 
     # -----------------------------------------------------
