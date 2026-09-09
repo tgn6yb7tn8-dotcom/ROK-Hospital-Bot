@@ -23,8 +23,6 @@ except ImportError:
 import pytesseract
 
 
-ANALYZER_BUILD = "2026-09-09-vietnamese-troops-fixed"
-
 # =========================================================
 # TESSERACT CONFIGURATION
 # =========================================================
@@ -1021,62 +1019,7 @@ def trouver_unite(
         return nom_pl, tier_pl
 
     # =====================================================
-    # 1. RECONNAISSANCE PAR TOKENS
-    # =====================================================
-    # Tesseract peut insérer des mots parasites entre les vrais mots.
-    # Exemple observé sur une capture :
-    # ``Long Swordsman`` devenait quelque chose comme
-    # ``helene eons Sworsman Swordsman Long ...``.
-    # L'ancien test ``nom in texte_normalise`` échouait alors parce que
-    # les deux mots n'étaient plus contigus.
-    #
-    # On vérifie donc d'abord que tous les mots distinctifs du nom sont
-    # présents dans les tokens de LA LIGNE. Les T5 sont testés avant les
-    # T4 afin que ``Elite Maryannu`` ne puisse jamais tomber sur ``Maryannu``.
-    tokens = [
-        normaliser_texte(mot["texte"])
-        for mot in mots
-        if normaliser_texte(mot["texte"])
-    ]
-
-    ensemble = set(tokens)
-
-    # T5 d'abord.
-    noms_t5_tries = sorted(
-        [
-            (
-                normaliser_texte(nom),
-                normaliser_texte(nom).split()
-            )
-            for nom in T5_UNITS
-        ],
-        key=lambda item: len(item[0]),
-        reverse=True
-    )
-
-    for nom_normalise, morceaux in noms_t5_tries:
-        if morceaux and all(morceau in ensemble for morceau in morceaux):
-            return nom_normalise, "T5"
-
-    # Puis T4.
-    noms_t4_tries = sorted(
-        [
-            (
-                normaliser_texte(nom),
-                normaliser_texte(nom).split()
-            )
-            for nom in T4_UNITS
-        ],
-        key=lambda item: len(item[0]),
-        reverse=True
-    )
-
-    for nom_normalise, morceaux in noms_t4_tries:
-        if morceaux and all(morceau in ensemble for morceau in morceaux):
-            return nom_normalise, "T4"
-
-    # =====================================================
-    # 2. RECONNAISSANCE DIRECTE / HISTORIQUE
+    # 1. RECONNAISSANCE DIRECTE / HISTORIQUE
     # =====================================================
     # On travaille uniquement avec les mots de LA LIGNE courante.
     # C'est essentiel : l'ancien code envoyait parfois plusieurs lignes
@@ -1120,7 +1063,7 @@ def trouver_unite(
             return normaliser_texte(canonique), "T3"
 
     # =====================================================
-    # 3. TRADUCTION AUTOMATIQUE EN DERNIER RECOURS
+    # 2. TRADUCTION AUTOMATIQUE EN DERNIER RECOURS
     # =====================================================
     # IMPORTANT : on ne traduit plus la totalité d'une fenêtre OCR
     # contenant potentiellement des éléments graphiques et plusieurs
@@ -3468,8 +3411,6 @@ def est_doublon(
 def analyser_plusieurs_images(
     images
 ):
-
-    print(f"Analyzer build : {ANALYZER_BUILD}")
 
     if not images:
 
