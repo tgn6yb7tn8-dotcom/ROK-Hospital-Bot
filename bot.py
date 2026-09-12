@@ -441,13 +441,21 @@ def lire_ligne_google(
 
 def modifier_derniere_verification_google(
     player_id,
-    champ,
-    valeur,
+    modifications,
 ):
     """
-    Modifie la dernière vérification correspondant au Player ID.
+    Modifie plusieurs statistiques de la dernière vérification
+    correspondant au Player ID.
 
-    Si T4 ou T5 est modifié, Total est recalculé automatiquement.
+    ``modifications`` est une liste de couples :
+    [
+        ("t4", 100),
+        ("food", 50000000),
+        ("gold", 1900000),
+    ]
+
+    Si T4 ou T5 est modifié, Total est recalculé automatiquement
+    à partir des nouvelles valeurs T4 + T5.
     """
 
     worksheet = obtenir_feuille_google()
@@ -462,37 +470,52 @@ def modifier_derniere_verification_google(
 
     row_number = lignes[-1]
 
-    champ_normalise = champ.strip().lower()
+    # Vérification de toutes les statistiques avant de modifier le Sheet.
+    modifications_normalisees = []
 
-    if champ_normalise not in UPDATE_FIELDS:
-        raise ValueError(
-            "Stat invalide."
+    for champ, valeur in modifications:
+
+        champ_normalise = champ.strip().lower()
+
+        if champ_normalise not in UPDATE_FIELDS:
+            raise ValueError(
+                f"Stat invalide : {champ}."
+            )
+
+        nouvelle_valeur = convertir_entier_commande(
+            valeur
         )
 
-    nom_colonne = UPDATE_FIELDS[
-        champ_normalise
-    ]
+        modifications_normalisees.append(
+            (
+                champ_normalise,
+                UPDATE_FIELDS[champ_normalise],
+                nouvelle_valeur,
+            )
+        )
 
-    nouvelle_valeur = convertir_entier_commande(
-        valeur
-    )
+    # Applique toutes les modifications demandées.
+    for champ_normalise, nom_colonne, nouvelle_valeur in modifications_normalisees:
 
-    col_index = colonne_google(
-        worksheet,
-        nom_colonne,
-    )
+        col_index = colonne_google(
+            worksheet,
+            nom_colonne,
+        )
 
-    worksheet.update_cell(
-        row_number,
-        col_index,
-        nouvelle_valeur,
-    )
+        worksheet.update_cell(
+            row_number,
+            col_index,
+            nouvelle_valeur,
+        )
 
-    # Si T4 ou T5 change, on recalcule Total.
-    if champ_normalise in {
-        "t4",
-        "t5",
-    }:
+    # Si T4 ou T5 a été modifié, Total doit toujours correspondre
+    # à T4 + T5 après l'ensemble des modifications.
+    champs_modifies = {
+        champ
+        for champ, _, _ in modifications_normalisees
+    }
+
+    if champs_modifies.intersection({"t4", "t5"}):
 
         ligne = lire_ligne_google(
             worksheet,
@@ -537,8 +560,7 @@ def modifier_derniere_verification_google(
 
     return (
         row_number,
-        nom_colonne,
-        nouvelle_valeur,
+        modifications_normalisees,
         ligne_finale,
     )
 
@@ -1341,8 +1363,7 @@ async def history_command(
 async def update_command(
     ctx,
     player_id: str,
-    champ: str,
-    valeur: str,
+    *args,
 ):
 
     if not player_id.isdigit():
@@ -1353,34 +1374,78 @@ async def update_command(
 
         return
 
-    champ_normalise = champ.strip().lower()
-
-    if champ_normalise not in UPDATE_FIELDS:
+    # Il faut toujours avoir des couples : stat valeur stat valeur...
+    if not args or len(args) % 2 != 0:
 
         champs = ", ".join(
             UPDATE_FIELDS.keys()
         )
 
         await ctx.send(
-            "❌ Stat invalide.\n"
+            "❌ Format invalide.\n"
             f"Statistiques disponibles : `{champs}`\n\n"
-            "Exemple : `!update 219502046 t4 15`"
+            "Exemple : `!update 219457776 t4 100 food 50000000 gold 1900000`"
         )
 
         return
+
+    modifications = []
+
+    for index in range(
+        0,
+        len(args),
+        2,
+    ):
+
+        champ = args[index]
+        valeur = args[index + 1]
+
+        champ_normalise = champ.strip().lower()
+
+        if champ_normalise not in UPDATE_FIELDS:
+
+            champs = ", ".join(
+                UPDATE_FIELDS.keys()
+            )
+
+            await ctx.send(
+                f"❌ Stat invalide : `{champ}`.\n"
+                f"Statistiques disponibles : `{champs}`"
+            )
+
+            return
+
+        try:
+
+            convertir_entier_commande(
+                valeur
+            )
+
+        except ValueError as e:
+
+            await ctx.send(
+                f"❌ Valeur invalide pour `{champ}` : {e}"
+            )
+
+            return
+
+        modifications.append(
+            (
+                champ_normalise,
+                valeur,
+            )
+        )
 
     try:
 
         (
             row_number,
-            nom_colonne,
-            nouvelle_valeur,
+            modifications_effectuees,
             ligne_finale,
         ) = await asyncio.to_thread(
             modifier_derniere_verification_google,
             player_id,
-            champ_normalise,
-            valeur,
+            modifications,
         )
 
     except ValueError as e:
@@ -1412,29 +1477,37 @@ async def update_command(
 
         return
 
-    message = (
-        "✅ **Google Sheet updated**\n\n"
-        f"👤 **Player ID:** {player_id}\n"
-        f"📝 **{nom_colonne}:** {nouvelle_valeur}\n"
-    )
+    lignes_message = [
+        "✅ **Google Sheet updated**",
+        "",
+        f"👤 **Player ID:** {player_id}",
+        "",
+    ]
 
-    # Afficher aussi le total si T4/T5 a été modifié.
-    if champ_normalise in {
-        "t4",
-        "t5",
-    }:
+    for champ_normalise, nom_colonne, nouvelle_valeur in modifications_effectuees:
 
-        message += (
-            f"⚔️ **Total:** "
-            f"{ligne_finale.get('Total', '')}\n"
+        lignes_message.append(
+            f"📝 **{nom_colonne}:** {nouvelle_valeur:,}"
         )
 
-    message += (
+    # Afficher le total final si T4/T5 a été modifié.
+    champs_modifies = {
+        champ
+        for champ, _, _ in modifications_effectuees
+    }
+
+    if champs_modifies.intersection({"t4", "t5"}):
+
+        lignes_message.append(
+            f"⚔️ **Total:** {ligne_finale.get('Total', '')}"
+        )
+
+    lignes_message.append(
         f"📄 **Sheet row:** {row_number}"
     )
 
     await ctx.send(
-        message
+        "\n".join(lignes_message)
     )
 
 
